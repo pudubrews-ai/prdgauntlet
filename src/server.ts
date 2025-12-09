@@ -7,6 +7,8 @@ import { z } from 'zod';
 import type { GauntletConfig } from './types/index.js';
 import { handleRunGauntlet } from './tools/runGauntlet.js';
 import { handleHealth } from './tools/health.js';
+import { handleCheckStatus } from './tools/checkStatus.js';
+import { handleGetTranscript } from './tools/getTranscript.js';
 import { logger } from './utils/logger.js';
 
 // Define Zod schemas for MCP tool registration
@@ -63,6 +65,15 @@ const HealthParamsSchema = {
     .boolean()
     .optional()
     .describe('Force refresh provider validation (default: false)'),
+};
+
+const CheckStatusParamsSchema = {
+  jobId: z.string().uuid().describe('The job ID to check status for'),
+};
+
+const GetTranscriptParamsSchema = {
+  jobId: z.string().uuid().describe('The job ID to retrieve transcript from'),
+  model: z.enum(['chatgpt', 'gemini']).describe('Which critic transcript to retrieve'),
 };
 
 export function createServer(config: GauntletConfig): McpServer {
@@ -126,7 +137,73 @@ export function createServer(config: GauntletConfig): McpServer {
     }
   );
 
-  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health');
+  // Register check_gauntlet_status tool (FR2)
+  server.tool(
+    'check_gauntlet_status',
+    'Check the status of a running or completed gauntlet job. Returns current progress, partial results, or final PRD.',
+    CheckStatusParamsSchema,
+    async (params) => {
+      logger.logDebug('check_gauntlet_status called', { jobId: params.jobId });
+
+      const result = handleCheckStatus(params);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register get_debate_transcript tool (FR3)
+  server.tool(
+    'get_debate_transcript',
+    'Retrieve the full debate transcript for a specific critic from a completed gauntlet job.',
+    GetTranscriptParamsSchema,
+    async (params) => {
+      logger.logDebug('get_debate_transcript called', { jobId: params.jobId, model: params.model });
+
+      const result = handleGetTranscript(params);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript');
 
   return server;
 }

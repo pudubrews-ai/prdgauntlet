@@ -57,7 +57,10 @@ export function parseDefenderResponse(response: string): ParsedDefenderResponse 
 
 function extractUpdatedPrd(content: string): string | null {
   // Look for ## Updated PRD section
-  const prdMatch = content.match(/## Updated PRD\s*\n([\s\S]*?)(?=\n## |\n---|\n```json|$)/);
+  // Note: The PRD content may contain its own ## headers, so we need to look for
+  // the specific end markers (## Changes This Round or ## Question for Critic)
+  // rather than any ## header
+  const prdMatch = content.match(/## Updated PRD\s*\n([\s\S]*?)(?=\n## Changes This Round|\n## Question for Critic|\n---END RESPONSE---|$)/);
   if (prdMatch) {
     return prdMatch[1].trim();
   }

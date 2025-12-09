@@ -24,6 +24,16 @@ export class GeminiClient implements LLMClient {
   }
 
   async chat(messages: LLMMessage[], systemPrompt: string): Promise<LLMResponse> {
+    // Validate input
+    if (!messages || messages.length === 0) {
+      throw new Error('Gemini client received empty messages array');
+    }
+
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage?.content || lastMessage.content.trim() === '') {
+      throw new Error('Gemini client received empty message content');
+    }
+
     const model = this.client.getGenerativeModel({
       model: this.modelId,
       systemInstruction: systemPrompt,
@@ -47,28 +57,38 @@ export class GeminiClient implements LLMClient {
       ],
     });
 
-    // Convert to Gemini history format
-    const history = messages.slice(0, -1).map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-
-    const lastMessage = messages[messages.length - 1];
-
-    const chat = model.startChat({
-      history: history as Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>,
-    });
-
     // Create a timeout promise
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`Gemini API timeout after ${this.timeoutMs}ms`)), this.timeoutMs);
     });
 
     try {
-      const result = await Promise.race([
-        chat.sendMessage(lastMessage?.content ?? ''),
-        timeoutPromise,
-      ]);
+      let result;
+
+      if (messages.length === 1) {
+        // Single message: use generateContent directly for reliability
+        // This ensures the first message is properly sent with system instruction
+        result = await Promise.race([
+          model.generateContent(lastMessage.content),
+          timeoutPromise,
+        ]);
+      } else {
+        // Multi-turn: use startChat with history
+        // Convert all but last message to Gemini history format
+        const history = messages.slice(0, -1).map((m) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }],
+        }));
+
+        const chat = model.startChat({
+          history: history as Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>,
+        });
+
+        result = await Promise.race([
+          chat.sendMessage(lastMessage.content),
+          timeoutPromise,
+        ]);
+      }
 
       const response = result.response;
       const content = response.text();

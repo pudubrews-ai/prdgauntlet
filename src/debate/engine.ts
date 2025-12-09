@@ -91,7 +91,15 @@ export async function runDebate(
   const initialCriticContent = formatCriticReviewMessage(currentPrd, previousChangelog);
   criticHistory.push({ role: 'user', content: initialCriticContent });
 
-  logger.logDebug(`Starting ${critic} debate`, { jobId, maxRounds: config.maxRounds });
+  // TEMP: Use logInfo instead of logDebug to trace Gemini content bug
+  logger.logInfo(`Starting ${critic} debate`, {
+    jobId,
+    maxRounds: config.maxRounds,
+    prdLength: prd.length,
+    currentPrdLength: currentPrd.length,
+    initialCriticContentLength: initialCriticContent.length,
+    previousChangelogLength: previousChangelog?.length ?? 0,
+  });
 
   while (round < config.maxRounds) {
     round++;
