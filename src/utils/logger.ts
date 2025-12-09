@@ -48,16 +48,9 @@ class Logger {
 
     const output = this.formatEntry(entry);
 
-    switch (level) {
-      case 'error':
-        console.error(output);
-        break;
-      case 'warn':
-        console.warn(output);
-        break;
-      default:
-        console.log(output);
-    }
+    // Always write to stderr to avoid interfering with MCP stdio protocol
+    // stdout is reserved for JSON-RPC messages
+    process.stderr.write(output + '\n');
   }
 
   logDebug(message: string, meta?: Omit<LogEntry, 'timestamp' | 'level' | 'message'>): void {

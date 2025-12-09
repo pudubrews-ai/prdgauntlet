@@ -37,7 +37,7 @@ const DEFAULT_CONFIG: Omit<GauntletConfig, 'anthropicApiKey' | 'openaiApiKey' | 
   models: {
     claude: 'claude-sonnet-4-5-20250929',
     chatgpt: 'gpt-4o',
-    gemini: 'gemini-1.5-pro',
+    gemini: 'gemini-2.0-flash',
   },
   fallbackPolicy: {
     onModelUnavailable: 'skip',

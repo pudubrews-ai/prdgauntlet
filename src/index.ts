@@ -3,7 +3,15 @@
 // PRD Gauntlet MCP Server - Entry Point
 // ============================================================================
 
-import 'dotenv/config';
+import { config as dotenvConfig } from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
+
+// Load .env from the package directory (not cwd)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const envPath = resolve(__dirname, '..', '.env');
+dotenvConfig({ path: envPath });
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
 import { loadConfig } from './utils/config.js';
