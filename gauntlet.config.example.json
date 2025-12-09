@@ -1,0 +1,23 @@
+{
+  "maxRoundsPerModel": 5,
+  "maxTotalTokens": 100000,
+  "maxEstimatedCost": 1.00,
+  "maxConcurrentJobs": 3,
+  "includeTranscripts": false,
+  "retryOnTimeout": true,
+  "debug": false,
+  "models": {
+    "claude": "claude-sonnet-4-5-20250929",
+    "chatgpt": "gpt-4o",
+    "gemini": "gemini-1.5-pro"
+  },
+  "fallbackPolicy": {
+    "onModelUnavailable": "skip",
+    "onInvalidModelId": "error"
+  },
+  "costRates": {
+    "claude": { "input": 3.00, "output": 15.00 },
+    "chatgpt": { "input": 2.50, "output": 10.00 },
+    "gemini": { "input": 1.25, "output": 5.00 }
+  }
+}
