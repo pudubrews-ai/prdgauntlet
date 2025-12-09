@@ -56,8 +56,12 @@ export async function runDebate(
 ): Promise<DebateResult> {
   const { jobId, prd, critic, config, costTracker, changelog, previousChangelog } = context;
 
-  // Initialize clients
-  const defender = new ClaudeClient(gauntletConfig.anthropicApiKey, gauntletConfig.models.claude);
+  // Initialize clients with configurable timeout
+  const defender = new ClaudeClient(
+    gauntletConfig.anthropicApiKey,
+    gauntletConfig.models.claude,
+    gauntletConfig.apiTimeoutMs
+  );
   const criticClient = createCriticClient(critic, gauntletConfig);
 
   // Build prompts
@@ -275,9 +279,9 @@ export async function runDebate(
 
 function createCriticClient(critic: CriticModel, config: GauntletConfig): LLMClient {
   if (critic === 'chatgpt') {
-    return new OpenAIClient(config.openaiApiKey, config.models.chatgpt);
+    return new OpenAIClient(config.openaiApiKey, config.models.chatgpt, config.apiTimeoutMs);
   } else {
-    return new GeminiClient(config.googleApiKey, config.models.gemini);
+    return new GeminiClient(config.googleApiKey, config.models.gemini, config.apiTimeoutMs);
   }
 }
 

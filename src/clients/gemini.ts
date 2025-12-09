@@ -6,15 +6,17 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/ge
 import type { LLMClient, LLMMessage, LLMResponse } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
-const API_TIMEOUT_MS = 60_000; // 60 seconds per PRD NFR2
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per PRD v2.3.1
 
 export class GeminiClient implements LLMClient {
   private client: GoogleGenerativeAI;
   private modelId: string;
+  private timeoutMs: number;
 
-  constructor(apiKey: string, modelId: string = 'gemini-1.5-pro') {
+  constructor(apiKey: string, modelId: string = 'gemini-1.5-pro', timeoutMs?: number) {
     this.client = new GoogleGenerativeAI(apiKey);
     this.modelId = modelId;
+    this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   getModelId(): string {
@@ -59,7 +61,7 @@ export class GeminiClient implements LLMClient {
 
     // Create a timeout promise
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Gemini API timeout after ${API_TIMEOUT_MS}ms`)), API_TIMEOUT_MS);
+      setTimeout(() => reject(new Error(`Gemini API timeout after ${this.timeoutMs}ms`)), this.timeoutMs);
     });
 
     try {

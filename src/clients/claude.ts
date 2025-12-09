@@ -6,15 +6,17 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { LLMClient, LLMMessage, LLMResponse } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
-const API_TIMEOUT_MS = 60_000; // 60 seconds per PRD NFR2
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per PRD v2.3.1
 
 export class ClaudeClient implements LLMClient {
   private client: Anthropic;
   private modelId: string;
+  private timeoutMs: number;
 
-  constructor(apiKey: string, modelId: string = 'claude-sonnet-4-5-20250929') {
+  constructor(apiKey: string, modelId: string = 'claude-sonnet-4-5-20250929', timeoutMs?: number) {
     this.client = new Anthropic({ apiKey });
     this.modelId = modelId;
+    this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   getModelId(): string {
@@ -31,7 +33,7 @@ export class ClaudeClient implements LLMClient {
       }));
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const response = await this.client.messages.create(
@@ -61,7 +63,7 @@ export class ClaudeClient implements LLMClient {
       clearTimeout(timeoutId);
 
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Claude API timeout after ${API_TIMEOUT_MS}ms`);
+        throw new Error(`Claude API timeout after ${this.timeoutMs}ms`);
       }
 
       throw error;

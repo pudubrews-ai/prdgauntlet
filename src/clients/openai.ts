@@ -6,15 +6,17 @@ import OpenAI from 'openai';
 import type { LLMClient, LLMMessage, LLMResponse } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
-const API_TIMEOUT_MS = 60_000; // 60 seconds per PRD NFR2
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per PRD v2.3.1
 
 export class OpenAIClient implements LLMClient {
   private client: OpenAI;
   private modelId: string;
+  private timeoutMs: number;
 
-  constructor(apiKey: string, modelId: string = 'gpt-4o') {
+  constructor(apiKey: string, modelId: string = 'gpt-4o', timeoutMs?: number) {
     this.client = new OpenAI({ apiKey });
     this.modelId = modelId;
+    this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   getModelId(): string {
@@ -32,7 +34,7 @@ export class OpenAIClient implements LLMClient {
     ];
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const response = await this.client.chat.completions.create(
@@ -60,7 +62,7 @@ export class OpenAIClient implements LLMClient {
       clearTimeout(timeoutId);
 
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`OpenAI API timeout after ${API_TIMEOUT_MS}ms`);
+        throw new Error(`OpenAI API timeout after ${this.timeoutMs}ms`);
       }
 
       throw error;

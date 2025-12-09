@@ -17,6 +17,7 @@ export interface GauntletInput {
     maxRoundsPerModel?: number;
     maxTotalTokens?: number;
     maxEstimatedCost?: number;
+    apiTimeoutMs?: number; // Per-API-call timeout in ms. Default: 600000 (10 min)
     includeTranscripts?: boolean;
     models?: {
       chatgpt?: string;
@@ -178,6 +179,7 @@ export interface GauntletConfig {
   maxRoundsPerModel: number;
   maxTotalTokens?: number;
   maxEstimatedCost?: number;
+  apiTimeoutMs: number; // Per-API-call timeout in ms. Default: 600000 (10 min)
   maxConcurrentJobs: number;
   includeTranscripts: boolean;
 
@@ -275,6 +277,7 @@ export interface HealthOutput {
     maxRoundsPerModel: number;
     maxTotalTokens?: number;
     maxEstimatedCost?: number;
+    apiTimeoutMs: number;
     retryOnTimeout: boolean;
   };
 }

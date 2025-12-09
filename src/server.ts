@@ -37,6 +37,11 @@ const RunGauntletParamsSchema = {
         .positive()
         .optional()
         .describe('Hard cap on estimated cost in USD, triggers early stop'),
+      apiTimeoutMs: z
+        .number()
+        .positive()
+        .optional()
+        .describe('Per-API-call timeout in ms (default: 600000 / 10 min)'),
       includeTranscripts: z
         .boolean()
         .optional()

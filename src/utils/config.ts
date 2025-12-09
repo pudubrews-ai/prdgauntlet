@@ -11,6 +11,7 @@ interface ConfigFile {
   maxRoundsPerModel?: number;
   maxTotalTokens?: number;
   maxEstimatedCost?: number;
+  apiTimeoutMs?: number;
   maxConcurrentJobs?: number;
   includeTranscripts?: boolean;
   retryOnTimeout?: boolean;
@@ -30,6 +31,7 @@ interface ConfigFile {
 
 const DEFAULT_CONFIG: Omit<GauntletConfig, 'anthropicApiKey' | 'openaiApiKey' | 'googleApiKey'> = {
   maxRoundsPerModel: 5,
+  apiTimeoutMs: 600_000, // 10 minutes per PRD v2.3.1
   maxConcurrentJobs: 3,
   includeTranscripts: false,
   retryOnTimeout: true,
@@ -102,6 +104,9 @@ export function loadConfig(configPath?: string): GauntletConfig {
     if (fileConfig.maxEstimatedCost !== undefined) {
       config.maxEstimatedCost = fileConfig.maxEstimatedCost;
     }
+    if (fileConfig.apiTimeoutMs !== undefined) {
+      config.apiTimeoutMs = fileConfig.apiTimeoutMs;
+    }
     if (fileConfig.maxConcurrentJobs !== undefined) {
       config.maxConcurrentJobs = fileConfig.maxConcurrentJobs;
     }
@@ -145,6 +150,9 @@ export function loadConfig(configPath?: string): GauntletConfig {
   if (process.env.MAX_ESTIMATED_COST) {
     config.maxEstimatedCost = parseFloat(process.env.MAX_ESTIMATED_COST);
   }
+  if (process.env.API_TIMEOUT_MS) {
+    config.apiTimeoutMs = parseInt(process.env.API_TIMEOUT_MS, 10);
+  }
   if (process.env.MAX_CONCURRENT_JOBS) {
     config.maxConcurrentJobs = parseInt(process.env.MAX_CONCURRENT_JOBS, 10);
   }
@@ -158,6 +166,7 @@ export function mergeWithRuntimeConfig(
     maxRoundsPerModel?: number;
     maxTotalTokens?: number;
     maxEstimatedCost?: number;
+    apiTimeoutMs?: number;
     includeTranscripts?: boolean;
     models?: {
       chatgpt?: string;
@@ -174,6 +183,7 @@ export function mergeWithRuntimeConfig(
     maxRoundsPerModel: runtimeConfig.maxRoundsPerModel ?? baseConfig.maxRoundsPerModel,
     maxTotalTokens: runtimeConfig.maxTotalTokens ?? baseConfig.maxTotalTokens,
     maxEstimatedCost: runtimeConfig.maxEstimatedCost ?? baseConfig.maxEstimatedCost,
+    apiTimeoutMs: runtimeConfig.apiTimeoutMs ?? baseConfig.apiTimeoutMs,
     includeTranscripts: runtimeConfig.includeTranscripts ?? baseConfig.includeTranscripts,
     models: {
       ...baseConfig.models,

@@ -78,6 +78,7 @@ export async function handleHealth(
       maxRoundsPerModel: config.maxRoundsPerModel,
       maxTotalTokens: config.maxTotalTokens,
       maxEstimatedCost: config.maxEstimatedCost,
+      apiTimeoutMs: config.apiTimeoutMs,
       retryOnTimeout: config.retryOnTimeout,
     },
   };
