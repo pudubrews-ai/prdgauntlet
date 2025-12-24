@@ -1,5 +1,5 @@
 // ============================================================================
-// Critic System Prompt - ChatGPT/Gemini PRD review role
+// Critic System Prompt - ChatGPT/Gemini PRD review role (PRD v2.6)
 // ============================================================================
 
 export interface CriticPromptMetadata {
@@ -7,6 +7,10 @@ export interface CriticPromptMetadata {
   constraints?: string[];
 }
 
+/**
+ * Build the critic system prompt with optional metadata.
+ * Per PRD v2.6: Critic receives product context, constraints, and changelog.
+ */
 export function buildCriticPrompt(metadata?: CriticPromptMetadata): string {
   let prompt = `You are a senior technical product manager reviewing a PRD. Your job is to find gaps and weaknesses.
 

@@ -11,7 +11,7 @@ import { dirname, resolve } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const envPath = resolve(__dirname, '..', '.env');
-dotenvConfig({ path: envPath });
+dotenvConfig({ path: envPath, quiet: true });
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
 import { loadConfig } from './utils/config.js';

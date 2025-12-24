@@ -19,14 +19,14 @@ interface LogEntry {
 }
 
 class Logger {
-  private debug: boolean;
+  private debugMode: boolean;
 
   constructor() {
-    this.debug = process.env.DEBUG === 'true';
+    this.debugMode = process.env.DEBUG === 'true';
   }
 
   setDebug(enabled: boolean): void {
-    this.debug = enabled;
+    this.debugMode = enabled;
   }
 
   private formatEntry(entry: LogEntry): string {
@@ -35,7 +35,7 @@ class Logger {
 
   private log(level: LogLevel, message: string, meta?: Omit<LogEntry, 'timestamp' | 'level' | 'message'>): void {
     // Skip debug logs unless debug mode is enabled
-    if (level === 'debug' && !this.debug) {
+    if (level === 'debug' && !this.debugMode) {
       return;
     }
 
@@ -123,10 +123,108 @@ class Logger {
 
   // Debug-only: log content (only when DEBUG=true)
   logContent(message: string, content: string, meta?: Record<string, unknown>): void {
-    if (this.debug) {
+    if (this.debugMode) {
       this.logDebug(message, { ...meta, contentLength: content.length, contentPreview: content.substring(0, 200) });
     }
   }
+
+  // NFR6: Additional event types for v2.6.0
+
+  /**
+   * Log API call with latency (NFR6: api.call event)
+   */
+  logApiCall(
+    jobId: string,
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    latencyMs: number
+  ): void {
+    this.logInfo('API call completed', {
+      jobId,
+      provider,
+      model,
+      tokens: { input: inputTokens, output: outputTokens },
+      latencyMs,
+    });
+  }
+
+  /**
+   * Log configuration loaded (NFR6: config.loaded event)
+   */
+  logConfigLoaded(source: string, overrides?: Record<string, unknown>): void {
+    this.logInfo('Configuration loaded', {
+      source,
+      overrides: overrides ?? {},
+    });
+  }
+
+  /**
+   * Log rate limit exceeded (NFR6: rate_limit.exceeded event)
+   */
+  logRateLimitExceeded(limitType: 'server' | 'provider', retryAfter?: number): void {
+    this.logWarn('Rate limit exceeded', {
+      limitType,
+      retryAfter,
+    });
+  }
+
+  /**
+   * Log cost threshold warning at 80% of cap (NFR6: warning.cost_threshold event)
+   */
+  logCostThresholdWarning(jobId: string, currentCost: number, capCost: number): void {
+    this.logWarn('Cost approaching 80% of cap', {
+      jobId,
+      currentCost,
+      capCost,
+      percentUsed: Math.round((currentCost / capCost) * 100),
+    });
+  }
+
+  /**
+   * Log job started (NFR6: job.started event)
+   */
+  logJobStarted(
+    jobId: string,
+    prdTitle: string | undefined,
+    modelsConfig: { claude: string; chatgpt: string; gemini: string }
+  ): void {
+    this.logInfo('Job started', {
+      jobId,
+      prdTitle: prdTitle ?? 'untitled',
+      modelsConfig,
+    });
+  }
+
+  /**
+   * Log job failed (NFR6: job.failed event)
+   */
+  logJobFailed(jobId: string, error: string, errorDetails?: Record<string, unknown>): void {
+    this.logError('Job failed', {
+      jobId,
+      error,
+      errorDetails,
+    });
+  }
+
+  /**
+   * Log consensus failed (NFR6: consensus.failed event)
+   */
+  logConsensusFailed(
+    jobId: string,
+    critic: string,
+    reason: string,
+    unresolvedConcerns: string[]
+  ): void {
+    this.logWarn('Consensus not reached', {
+      jobId,
+      model: critic,
+      reason,
+      unresolvedConcerns,
+    });
+  }
+
 }
 
 export const logger = new Logger();

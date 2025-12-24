@@ -19,7 +19,9 @@ export interface GauntletInput {
     maxEstimatedCost?: number;
     apiTimeoutMs?: number; // Per-API-call timeout in ms. Default: 600000 (10 min)
     includeTranscripts?: boolean;
+    forceUnlockReverts?: boolean; // Override revert locks in exceptional cases
     models?: {
+      claude?: string;
       chatgpt?: string;
       gemini?: string;
     };
@@ -54,9 +56,15 @@ export interface GauntletStats {
     model: CriticModel;
     reason: string;
   }>;
+  highConflictSections?: string[];
 }
 
-export type GauntletErrorCode = 'INVALID_INPUT' | 'PROVIDER_ERROR' | 'CONFIG_ERROR';
+export type GauntletErrorCode =
+  | 'INVALID_INPUT'
+  | 'PROVIDER_ERROR'
+  | 'CONFIG_ERROR'
+  | 'PRD_TOO_LARGE'
+  | 'RATE_LIMIT_EXCEEDED';
 
 export interface GauntletError {
   error: GauntletErrorCode;
@@ -169,6 +177,18 @@ export interface FallbackPolicy {
   onInvalidModelId: 'error';
 }
 
+export interface RateLimitConfig {
+  requestsPerMinute: number;
+  burstSize: number;
+}
+
+export interface RevertLock {
+  section: string;
+  changeType: ChangeType;
+  lockedAt: number; // version number when lock was applied
+  source: CriticModel;
+}
+
 export interface GauntletConfig {
   // API Keys (from environment)
   anthropicApiKey: string;
@@ -182,6 +202,7 @@ export interface GauntletConfig {
   apiTimeoutMs: number; // Per-API-call timeout in ms. Default: 600000 (10 min)
   maxConcurrentJobs: number;
   includeTranscripts: boolean;
+  forceUnlockReverts: boolean; // Override revert locks in exceptional cases
 
   // Models
   models: {
@@ -199,6 +220,9 @@ export interface GauntletConfig {
   // Policies
   fallbackPolicy: FallbackPolicy;
   retryOnTimeout: boolean;
+
+  // Rate limiting (FR12)
+  rateLimiting: RateLimitConfig;
 
   // Cost tracking
   costRates: CostRates;

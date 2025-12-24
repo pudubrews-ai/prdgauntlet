@@ -4,7 +4,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import type { GauntletConfig, CostRates, FallbackPolicy } from '../types/index.js';
+import type { GauntletConfig, CostRates, FallbackPolicy, RateLimitConfig } from '../types/index.js';
 import { DEFAULT_COST_RATES } from './cost.js';
 
 interface ConfigFile {
@@ -14,6 +14,7 @@ interface ConfigFile {
   apiTimeoutMs?: number;
   maxConcurrentJobs?: number;
   includeTranscripts?: boolean;
+  forceUnlockReverts?: boolean;
   retryOnTimeout?: boolean;
   debug?: boolean;
   models?: {
@@ -26,6 +27,7 @@ interface ConfigFile {
     critic?: string;
   };
   fallbackPolicy?: Partial<FallbackPolicy>;
+  rateLimiting?: Partial<RateLimitConfig>;
   costRates?: Partial<CostRates>;
 }
 
@@ -34,6 +36,7 @@ const DEFAULT_CONFIG: Omit<GauntletConfig, 'anthropicApiKey' | 'openaiApiKey' | 
   apiTimeoutMs: 600_000, // 10 minutes per PRD v2.3.1
   maxConcurrentJobs: 3,
   includeTranscripts: false,
+  forceUnlockReverts: false, // FR6: Override revert locks in exceptional cases
   retryOnTimeout: true,
   debug: false,
   models: {
@@ -44,6 +47,10 @@ const DEFAULT_CONFIG: Omit<GauntletConfig, 'anthropicApiKey' | 'openaiApiKey' | 
   fallbackPolicy: {
     onModelUnavailable: 'skip',
     onInvalidModelId: 'error',
+  },
+  rateLimiting: {
+    requestsPerMinute: 10,
+    burstSize: 3,
   },
   costRates: DEFAULT_COST_RATES,
 };
@@ -116,6 +123,9 @@ export function loadConfig(configPath?: string): GauntletConfig {
     if (fileConfig.retryOnTimeout !== undefined) {
       config.retryOnTimeout = fileConfig.retryOnTimeout;
     }
+    if (fileConfig.forceUnlockReverts !== undefined) {
+      config.forceUnlockReverts = fileConfig.forceUnlockReverts;
+    }
     if (fileConfig.debug !== undefined) {
       config.debug = fileConfig.debug;
     }
@@ -127,6 +137,9 @@ export function loadConfig(configPath?: string): GauntletConfig {
     }
     if (fileConfig.fallbackPolicy) {
       config.fallbackPolicy = { ...config.fallbackPolicy, ...fileConfig.fallbackPolicy };
+    }
+    if (fileConfig.rateLimiting) {
+      config.rateLimiting = { ...config.rateLimiting, ...fileConfig.rateLimiting };
     }
     if (fileConfig.costRates) {
       config.costRates = {
@@ -168,7 +181,9 @@ export function mergeWithRuntimeConfig(
     maxEstimatedCost?: number;
     apiTimeoutMs?: number;
     includeTranscripts?: boolean;
+    forceUnlockReverts?: boolean;
     models?: {
+      claude?: string;
       chatgpt?: string;
       gemini?: string;
     };
@@ -185,8 +200,10 @@ export function mergeWithRuntimeConfig(
     maxEstimatedCost: runtimeConfig.maxEstimatedCost ?? baseConfig.maxEstimatedCost,
     apiTimeoutMs: runtimeConfig.apiTimeoutMs ?? baseConfig.apiTimeoutMs,
     includeTranscripts: runtimeConfig.includeTranscripts ?? baseConfig.includeTranscripts,
+    forceUnlockReverts: runtimeConfig.forceUnlockReverts ?? baseConfig.forceUnlockReverts,
     models: {
       ...baseConfig.models,
+      claude: runtimeConfig.models?.claude ?? baseConfig.models.claude,
       chatgpt: runtimeConfig.models?.chatgpt ?? baseConfig.models.chatgpt,
       gemini: runtimeConfig.models?.gemini ?? baseConfig.models.gemini,
     },

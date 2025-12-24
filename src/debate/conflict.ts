@@ -2,7 +2,8 @@
 // Conflict Resolution - Handle cross-critic disputes (FR6)
 // ============================================================================
 
-import type { ChangeEntry, CriticModel } from '../types/index.js';
+import type { ChangeEntry, ChangeType, CriticModel, RevertLock } from '../types/index.js';
+import { logger } from '../utils/logger.js';
 
 export interface ConflictDetection {
   hasConflict: boolean;
@@ -143,4 +144,124 @@ export function buildConflictContext(
   }
 
   return lines.join('\n');
+}
+
+// ============================================================================
+// Revert Lock Manager (FR6) - Prevent infinite ping-pong between critics
+// ============================================================================
+
+/**
+ * Manages revert locks to prevent critics from endlessly reverting each other.
+ * Per FR6: After a revert, the section+changeType is locked from further reverts
+ * unless forceUnlockReverts is enabled.
+ */
+export class RevertLockManager {
+  private locks: Map<string, RevertLock> = new Map();
+  private sectionModificationCounts: Map<string, number> = new Map();
+  private forceUnlock: boolean;
+
+  constructor(forceUnlockReverts: boolean = false) {
+    this.forceUnlock = forceUnlockReverts;
+    if (forceUnlockReverts) {
+      logger.logWarn('Force unlock enabled - revert locks disabled for this gauntlet run');
+    }
+  }
+
+  /**
+   * Generate a unique key for a lock based on section and change type.
+   */
+  private getLockKey(section: string, changeType: ChangeType): string {
+    const normalizedSection = section.toLowerCase().replace(/\s+/g, ' ').trim();
+    return `${normalizedSection}::${changeType}`;
+  }
+
+  /**
+   * Check if a change is locked (cannot be reverted again).
+   */
+  isLocked(section: string | undefined, changeType: ChangeType): boolean {
+    if (this.forceUnlock) return false;
+    if (!section) return false;
+    return this.locks.has(this.getLockKey(section, changeType));
+  }
+
+  /**
+   * Add a lock after a revert occurs.
+   * Per FR6: Lock prevents the same section+changeType from being re-reverted.
+   */
+  addLock(change: ChangeEntry): void {
+    if (!change.section) return;
+
+    const lock: RevertLock = {
+      section: change.section,
+      changeType: change.type,
+      lockedAt: change.version,
+      source: change.source,
+    };
+
+    const key = this.getLockKey(change.section, change.type);
+    this.locks.set(key, lock);
+
+    logger.logDebug(`Revert lock added: ${key} at v${change.version} by ${change.source}`);
+  }
+
+  /**
+   * Track section modification for high-conflict detection.
+   * Per FR6: If section modified ≥3 times, it's flagged as high-conflict.
+   */
+  trackSectionModification(section: string | undefined): void {
+    if (!section) return;
+    const normalized = section.toLowerCase().replace(/\s+/g, ' ').trim();
+    const count = (this.sectionModificationCounts.get(normalized) ?? 0) + 1;
+    this.sectionModificationCounts.set(normalized, count);
+  }
+
+  /**
+   * Get sections with high conflict (modified ≥3 times).
+   */
+  getHighConflictSections(): string[] {
+    const highConflict: string[] = [];
+    for (const [section, count] of this.sectionModificationCounts) {
+      if (count >= 3) {
+        highConflict.push(section);
+      }
+    }
+    return highConflict;
+  }
+
+  /**
+   * Check if a section should receive jitter (modified ≥2 times).
+   * Per FR6: Jitter breaks deterministic loops by adding random prioritization.
+   */
+  shouldApplyJitter(section: string | undefined): boolean {
+    if (!section) return false;
+    const normalized = section.toLowerCase().replace(/\s+/g, ' ').trim();
+    return (this.sectionModificationCounts.get(normalized) ?? 0) >= 2;
+  }
+
+  /**
+   * Get all active locks (for debugging/logging).
+   */
+  getLocks(): RevertLock[] {
+    return Array.from(this.locks.values());
+  }
+
+  /**
+   * Clear all locks (for testing or reset).
+   */
+  clear(): void {
+    this.locks.clear();
+    this.sectionModificationCounts.clear();
+  }
+}
+
+/**
+ * Generate a jitter signal for the defender prompt.
+ * Per FR6: Rotates between prioritizing clarity or completeness.
+ */
+export function getJitterSignal(): string {
+  const signals = [
+    'For this round, prioritize clarity over completeness when evaluating feedback.',
+    'For this round, prioritize completeness over clarity when evaluating feedback.',
+  ];
+  return signals[Math.floor(Math.random() * signals.length)];
 }

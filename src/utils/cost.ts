@@ -5,11 +5,18 @@
 import type { CostRates, ModelName } from '../types/index.js';
 
 // Default rates per 1M tokens (as of release)
+// Per PRD v2.6: Product owner reviews rates quarterly
 export const DEFAULT_COST_RATES: CostRates = {
   claude: { input: 3.0, output: 15.0 },
   chatgpt: { input: 2.5, output: 10.0 },
   gemini: { input: 1.25, output: 5.0 },
 };
+
+// FR10: 10% safety margin on cost estimates to account for tokenization variations
+const SAFETY_MARGIN = 0.10;
+
+// FR10: Warning threshold at 80% of cost cap
+const WARNING_THRESHOLD = 0.80;
 
 interface TokenUsage {
   input: number;
@@ -82,13 +89,33 @@ export class CostTracker {
     return Math.round(this.getTotalCost() * 100) / 100;
   }
 
+  /**
+   * Get the total cost with 10% safety margin applied.
+   * Per FR10: Safety margin accounts for tokenization variations.
+   */
+  getCostWithSafetyMargin(): number {
+    return this.getTotalCost() * (1 + SAFETY_MARGIN);
+  }
+
+  /**
+   * Check if cost (with safety margin) has exceeded the cap.
+   * Per FR10: Uses full precision for enforcement.
+   */
   hasExceededCostCap(cap: number): boolean {
-    // Use full precision for enforcement
-    return this.getTotalCost() >= cap;
+    return this.getCostWithSafetyMargin() >= cap;
   }
 
   hasExceededTokenCap(cap: number): boolean {
     return this.getTotalTokens() >= cap;
+  }
+
+  /**
+   * Check if cost is approaching 80% of the cap.
+   * Per FR10: Triggers warning visible to user via Claude's response.
+   */
+  isApproaching80PercentCap(cap: number): boolean {
+    const costWithMargin = this.getCostWithSafetyMargin();
+    return costWithMargin >= cap * WARNING_THRESHOLD && costWithMargin < cap;
   }
 
   getCostBreakdown(): { claude: number; chatgpt: number; gemini: number; total: number } {

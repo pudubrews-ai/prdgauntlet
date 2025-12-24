@@ -79,6 +79,9 @@ export async function runDebate(
   let totalDefenderTokens = 0;
   let totalCriticTokens = 0;
 
+  // FR7: Set initial PRD for diff tracking
+  changelog.setInitialPrd(prd);
+
   // Conversation history for each participant
   const defenderHistory: LLMMessage[] = [];
   const criticHistory: LLMMessage[] = [];
@@ -117,6 +120,18 @@ export async function runDebate(
       outcome = 'early_stop';
       unresolvedConcerns = ['Cost cap exceeded before completion'];
       break;
+    }
+
+    // FR10: Check 80% cost threshold warning
+    if (
+      config.maxEstimatedCost &&
+      costTracker.isApproaching80PercentCap(config.maxEstimatedCost)
+    ) {
+      logger.logCostThresholdWarning(
+        jobId,
+        costTracker.getCostWithSafetyMargin(),
+        config.maxEstimatedCost
+      );
     }
 
     try {
@@ -221,9 +236,9 @@ export async function runDebate(
         currentPrd = parsed.updatedPrd;
       }
 
-      // Track changes
+      // Track changes with diff generation
       if (parsed.roundDelta) {
-        const entry = changelog.addChange(parsed.roundDelta, critic, round);
+        const entry = changelog.addChange(parsed.roundDelta, critic, round, undefined, currentPrd);
         changes.push(entry);
       }
 

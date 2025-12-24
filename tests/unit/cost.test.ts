@@ -92,21 +92,29 @@ describe('CostTracker', () => {
       expect(tracker.hasExceededTokenCap(100001)).toBe(false);
     });
 
-    it('should detect when cost cap is exceeded', () => {
-      // Add tokens that cost more than $1.00
+    it('should detect when cost cap is exceeded (with 10% safety margin)', () => {
+      // Add tokens that cost $3.00
       // 1M tokens @ $3/1M = $3.00
+      // With 10% margin: $3.30
       tracker.addTokens('claude', 1_000_000, 0);
 
+      // $3.30 exceeds $3.00 cap
       expect(tracker.hasExceededCostCap(3.0)).toBe(true);
+      // $3.30 does not exceed $4.00 cap
       expect(tracker.hasExceededCostCap(4.0)).toBe(false);
     });
 
-    it('should use full precision for cap enforcement', () => {
-      // Add tokens worth $0.999
-      tracker.addTokens('claude', 333_000, 0);
+    it('should use full precision for cap enforcement with 10% safety margin', () => {
+      // Add tokens worth $0.90
+      // With 10% safety margin: $0.90 * 1.10 = $0.99
+      tracker.addTokens('claude', 300_000, 0); // 300K @ $3/1M = $0.90
 
-      // Should NOT exceed $1.00 cap
+      // Should NOT exceed $1.00 cap (with margin: $0.99 < $1.00)
       expect(tracker.hasExceededCostCap(1.0)).toBe(false);
+
+      // Add more to push over the margin
+      tracker.addTokens('claude', 100_000, 0); // Now at $1.20, with margin: $1.32
+      expect(tracker.hasExceededCostCap(1.0)).toBe(true);
     });
   });
 

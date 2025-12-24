@@ -18,6 +18,8 @@ import { mergeWithRuntimeConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { isModelAvailable, getValidationCache } from '../clients/validator.js';
 import { runDebate, type DebateConfig } from '../debate/engine.js';
+import { checkPrdSize } from '../utils/tokens.js';
+import { getGlobalRateLimiter, initGlobalRateLimiter } from '../utils/rateLimiter.js';
 
 // Input schema for validation
 export const RunGauntletInputSchema = z.object({
@@ -34,9 +36,12 @@ export const RunGauntletInputSchema = z.object({
       maxRoundsPerModel: z.number().positive().optional(),
       maxTotalTokens: z.number().positive().optional(),
       maxEstimatedCost: z.number().positive().optional(),
+      apiTimeoutMs: z.number().positive().optional(),
       includeTranscripts: z.boolean().optional(),
+      forceUnlockReverts: z.boolean().optional(), // FR6: Override revert locks
       models: z
         .object({
+          claude: z.string().optional(),
           chatgpt: z.string().optional(),
           gemini: z.string().optional(),
         })
@@ -72,6 +77,33 @@ export async function handleRunGauntlet(
     };
   }
 
+  // FR1: Check PRD size (80% of context window = 128K tokens)
+  const sizeCheck = checkPrdSize(validInput.prd);
+  if (!sizeCheck.ok) {
+    return {
+      error: 'PRD_TOO_LARGE',
+      message: `PRD exceeds recommended input size. PRD token count: ${sizeCheck.tokens}, Maximum allowed: ${sizeCheck.limit}. Consider breaking into smaller documents or using a model with larger context window.`,
+      details: {
+        tokenCount: sizeCheck.tokens,
+        maxAllowed: sizeCheck.limit,
+      },
+    };
+  }
+
+  // FR12: Check rate limit
+  const rateLimiter = initGlobalRateLimiter(baseConfig.rateLimiting);
+  const rateCheck = rateLimiter.tryAcquire();
+  if (!rateCheck.allowed) {
+    logger.logRateLimitExceeded('server', rateCheck.retryAfter);
+    return {
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: `Rate limit exceeded. Please wait ${rateCheck.retryAfter} seconds before trying again.`,
+      details: {
+        retryAfter: rateCheck.retryAfter,
+      },
+    };
+  }
+
   // Merge runtime config
   const config = mergeWithRuntimeConfig(baseConfig, validInput.config);
 
@@ -87,6 +119,7 @@ export async function handleRunGauntlet(
   }
 
   logger.logJobCreated(jobId);
+  logger.logJobStarted(jobId, validInput.metadata?.title, config.models);
 
   // Check model availability
   const validationCache = getValidationCache();
