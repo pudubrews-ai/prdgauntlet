@@ -353,3 +353,26 @@ export interface TranscriptError {
   error: TranscriptErrorCode;
   message: string;
 }
+
+// ----------------------------------------------------------------------------
+// List Jobs Types (Phase 2)
+// ----------------------------------------------------------------------------
+
+export interface ListJobsInput {
+  status?: JobStatus | 'all';
+  limit?: number;
+}
+
+export interface JobSummary {
+  jobId: string;
+  status: JobStatus;
+  createdAt: string;
+  lastUpdate: string;
+  currentRound?: number;
+  currentModel?: CriticModel;
+}
+
+export interface ListJobsOutput {
+  jobs: JobSummary[];
+  total: number;
+}

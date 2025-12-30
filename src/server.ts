@@ -9,6 +9,7 @@ import { handleRunGauntlet } from './tools/runGauntlet.js';
 import { handleHealth } from './tools/health.js';
 import { handleCheckStatus } from './tools/checkStatus.js';
 import { handleGetTranscript } from './tools/getTranscript.js';
+import { handleListJobs } from './tools/listJobs.js';
 import { logger } from './utils/logger.js';
 
 // Define Zod schemas for MCP tool registration
@@ -74,6 +75,19 @@ const CheckStatusParamsSchema = {
 const GetTranscriptParamsSchema = {
   jobId: z.string().uuid().describe('The job ID to retrieve transcript from'),
   model: z.enum(['chatgpt', 'gemini']).describe('Which critic transcript to retrieve'),
+};
+
+const ListJobsParamsSchema = {
+  status: z
+    .enum(['idle', 'debating_chatgpt', 'debating_gemini', 'complete', 'error', 'all'])
+    .optional()
+    .describe('Filter by job status (default: all)'),
+  limit: z
+    .number()
+    .positive()
+    .max(100)
+    .optional()
+    .describe('Maximum number of jobs to return (default: 50, max: 100)'),
 };
 
 export function createServer(config: GauntletConfig): McpServer {
@@ -203,7 +217,28 @@ export function createServer(config: GauntletConfig): McpServer {
     }
   );
 
-  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript');
+  // Register list_gauntlet_jobs tool
+  server.tool(
+    'list_gauntlet_jobs',
+    'List running and completed gauntlet jobs. Use this to recover job IDs after client timeout.',
+    ListJobsParamsSchema,
+    async (params) => {
+      logger.logDebug('list_gauntlet_jobs called', { status: params.status, limit: params.limit });
+
+      const result = handleListJobs(params);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs');
 
   return server;
 }
