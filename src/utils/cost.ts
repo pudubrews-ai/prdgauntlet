@@ -1,8 +1,9 @@
 // ============================================================================
-// Cost Tracking - Token counting and cost estimation (FR10)
+// Cost Tracking - Token counting and cost estimation (PRD v3.0)
 // ============================================================================
 
 import type { CostRates, ModelName } from '../types/index.js';
+import { logger } from './logger.js';
 
 // Default rates per 1M tokens (as of release)
 // Per PRD v2.6: Product owner reviews rates quarterly
@@ -17,6 +18,63 @@ const SAFETY_MARGIN = 0.10;
 
 // FR10: Warning threshold at 80% of cost cap
 const WARNING_THRESHOLD = 0.80;
+
+/**
+ * Rolling average tracker for cost estimation (PRD v3.0)
+ * Tracks last 100 jobs per model to calculate realistic token averages
+ */
+class RollingAverageTracker {
+  private samples: Map<ModelName, number[]> = new Map();
+  private maxSamples = 100; // Rolling window
+
+  addSample(model: ModelName, tokens: number): void {
+    const modelSamples = this.samples.get(model) || [];
+    modelSamples.push(tokens);
+
+    // Keep last 100 samples
+    if (modelSamples.length > this.maxSamples) {
+      modelSamples.shift();
+    }
+
+    this.samples.set(model, modelSamples);
+
+    logger.logDebug('Cost sample added', {
+      model,
+      tokens,
+      sampleCount: modelSamples.length,
+    });
+  }
+
+  getAverage(model: ModelName): number | null {
+    const samples = this.samples.get(model);
+    if (!samples || samples.length === 0) {
+      return null;
+    }
+
+    const sum = samples.reduce((a, b) => a + b, 0);
+    return sum / samples.length;
+  }
+
+  getStats(): { model: ModelName; avgTokens: number; sampleCount: number }[] {
+    const stats: { model: ModelName; avgTokens: number; sampleCount: number }[] = [];
+
+    for (const [model, samples] of this.samples.entries()) {
+      if (samples.length > 0) {
+        const sum = samples.reduce((a, b) => a + b, 0);
+        stats.push({
+          model,
+          avgTokens: Math.round(sum / samples.length),
+          sampleCount: samples.length,
+        });
+      }
+    }
+
+    return stats;
+  }
+}
+
+// Global rolling average tracker
+export const rollingAverageTracker = new RollingAverageTracker();
 
 interface TokenUsage {
   input: number;
@@ -133,5 +191,25 @@ export class CostTracker {
       chatgpt: { input: 0, output: 0 },
       gemini: { input: 0, output: 0 },
     };
+  }
+
+  /**
+   * Record job completion for rolling average calculation (PRD v3.0)
+   */
+  recordJobCompletion(): void {
+    const tokensByModel = this.getTokenCountByModel();
+
+    for (const [model, tokens] of Object.entries(tokensByModel)) {
+      if (tokens > 0) {
+        rollingAverageTracker.addSample(model as ModelName, tokens);
+      }
+    }
+  }
+
+  /**
+   * Get rolling average stats (PRD v3.0)
+   */
+  static getRollingAverageStats(): { model: ModelName; avgTokens: number; sampleCount: number }[] {
+    return rollingAverageTracker.getStats();
   }
 }
