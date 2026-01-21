@@ -10,6 +10,7 @@ import { handleHealth } from './tools/health.js';
 import { handleCheckStatus } from './tools/checkStatus.js';
 import { handleGetTranscript } from './tools/getTranscript.js';
 import { handleListJobs } from './tools/listJobs.js';
+import { handleClearCache } from './tools/clearCache.js';
 import { logger } from './utils/logger.js';
 
 // Define Zod schemas for MCP tool registration
@@ -238,7 +239,28 @@ export function createServer(config: GauntletConfig): McpServer {
     }
   );
 
-  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs');
+  // Register clear_terminology_cache tool (PRD v3.0)
+  server.tool(
+    'clear_terminology_cache',
+    'Manually invalidate the shared terminology cache. Use this to force re-research of technical terms.',
+    {},
+    async () => {
+      logger.logDebug('clear_terminology_cache called');
+
+      const result = handleClearCache();
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs, clear_terminology_cache');
 
   return server;
 }

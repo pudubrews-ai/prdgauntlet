@@ -1,17 +1,44 @@
 // ============================================================================
-// Consensus Detection - Exact match per FR5
+// Consensus Detection - Quantitative thresholds per PRD v3.0
 // ============================================================================
 
 import type { ConsensusResult, StructuredApproval } from '../types/index.js';
+import { getUndefinedTerms } from '../utils/research.js';
 
-// Exact approval phrase (no fuzzy matching)
-const APPROVAL_PHRASE = 'No further concerns. PRD approved.';
+// Exact approval phrases (per PRD v3.0 consensus criteria #5)
+const APPROVAL_PHRASES = [
+  'I have no further concerns with this PRD.',
+  'I have no further concerns with this PRD',
+  'This PRD is ready for implementation.',
+  'This PRD is ready for implementation',
+  'CONSENSUS_REACHED',
+  'No further concerns. PRD approved.', // Legacy v2.6 phrase
+];
 
+// Minimum rounds required (Threshold #1)
+const MIN_ROUNDS_REQUIRED = 2;
+
+// Max new issues allowed in final round for declining rate (Threshold #4)
+const MAX_NEW_ISSUES_FINAL_ROUND = 3;
+
+/**
+ * Detect consensus using PRD v3.0 quantitative thresholds
+ *
+ * Note: This function only checks Threshold #5 (explicit approval phrase).
+ * The full consensus check requires additional context (current round, PRD content, etc.)
+ * and is performed by checkFullConsensus() below.
+ */
 export function detectConsensus(response: string): ConsensusResult {
   const trimmed = response.trim();
 
-  // Check for exact phrase match
-  if (trimmed === APPROVAL_PHRASE || trimmed.includes(APPROVAL_PHRASE)) {
+  // Threshold #5: Check for exact approval phrase match
+  const hasApprovalPhrase = APPROVAL_PHRASES.some(phrase => {
+    // Case-insensitive, allows for trailing punctuation
+    const pattern = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    return pattern.test(trimmed);
+  });
+
+  if (hasApprovalPhrase) {
     return {
       isConsensus: true,
       isConditional: false,
@@ -60,6 +87,113 @@ export function detectConsensus(response: string): ConsensusResult {
     isConditional: false,
     isMalformed: false,
   };
+}
+
+/**
+ * Full consensus check with all 5 quantitative thresholds (PRD v3.0)
+ *
+ * Thresholds:
+ * 1. Minimum 2 rounds completed
+ * 2. Zero blocking issues (undefined terms, contradictions, etc.)
+ * 3. Terminology 100% complete
+ * 4. Declining rate (< 3 new issues this round)
+ * 5. Explicit approval phrase
+ */
+export interface FullConsensusContext {
+  currentRound: number;
+  currentPrd: string;
+  critiqueResponse: string;
+  newIssuesThisRound: number;
+  previousIssuesCount?: number;
+}
+
+export function checkFullConsensus(context: FullConsensusContext): {
+  consensusReached: boolean;
+  failedThresholds: string[];
+  details: Record<string, any>;
+} {
+  const failedThresholds: string[] = [];
+  const details: Record<string, any> = {};
+
+  // Threshold #1: Minimum rounds requirement
+  if (context.currentRound < MIN_ROUNDS_REQUIRED) {
+    failedThresholds.push('minimum_rounds');
+    details.currentRound = context.currentRound;
+    details.minRequired = MIN_ROUNDS_REQUIRED;
+  }
+
+  // Threshold #2: Zero blocking issues
+  const blockingIssues = extractBlockingIssues(context.critiqueResponse);
+  if (blockingIssues.length > 0) {
+    failedThresholds.push('blocking_issues');
+    details.blockingIssues = blockingIssues;
+  }
+
+  // Threshold #3: Terminology completeness (100%)
+  const undefinedTerms = getUndefinedTerms(context.currentPrd);
+  if (undefinedTerms.length > 0) {
+    failedThresholds.push('undefined_terms');
+    details.undefinedTerms = undefinedTerms;
+  }
+
+  // Threshold #4: Declining rate (< 3 new issues)
+  if (context.newIssuesThisRound >= MAX_NEW_ISSUES_FINAL_ROUND) {
+    failedThresholds.push('declining_rate');
+    details.newIssuesThisRound = context.newIssuesThisRound;
+    details.maxAllowed = MAX_NEW_ISSUES_FINAL_ROUND - 1;
+  }
+
+  // Threshold #5: Explicit approval phrase
+  const consensusResult = detectConsensus(context.critiqueResponse);
+  if (!consensusResult.isConsensus) {
+    failedThresholds.push('approval_phrase');
+    details.hasApprovalPhrase = false;
+  }
+
+  const consensusReached = failedThresholds.length === 0;
+
+  return {
+    consensusReached,
+    failedThresholds,
+    details,
+  };
+}
+
+/**
+ * Extract blocking issues from critique response
+ * Blocking issues include:
+ * - Undefined terms or acronyms
+ * - Logical contradictions
+ * - Missing error handling
+ * - Ambiguous acceptance criteria
+ */
+function extractBlockingIssues(response: string): string[] {
+  const issues: string[] = [];
+
+  // Look for explicit blocking issue indicators
+  const blockingPatterns = [
+    /undefined.*?term/i,
+    /missing.*?definition/i,
+    /contradiction/i,
+    /inconsistent/i,
+    /ambiguous.*?criteria/i,
+    /unclear.*?requirement/i,
+    /not defined/i,
+  ];
+
+  for (const pattern of blockingPatterns) {
+    if (pattern.test(response)) {
+      // Extract the sentence containing the issue
+      const sentences = response.split(/[.!?]+/);
+      for (const sentence of sentences) {
+        if (pattern.test(sentence)) {
+          issues.push(sentence.trim());
+        }
+      }
+    }
+  }
+
+  return issues;
 }
 
 function tryParseStructuredApproval(response: string): StructuredApproval | null {

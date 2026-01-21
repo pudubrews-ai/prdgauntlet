@@ -19,12 +19,16 @@ export interface GauntletInput {
     maxEstimatedCost?: number;
     apiTimeoutMs?: number; // Per-API-call timeout in ms. Default: 600000 (10 min)
     includeTranscripts?: boolean;
+    transcriptSummaryOnly?: boolean; // PRD v3.0: condensed summaries instead of full exchanges
+    targetedSections?: string[];     // PRD v3.0: for targeted re-debate on specific sections
     forceUnlockReverts?: boolean; // Override revert locks in exceptional cases
     models?: {
       claude?: string;
       chatgpt?: string;
       gemini?: string;
     };
+    webhookUrl?: string;             // PRD v3.0: URL for user notifications
+    webhookAuth?: WebhookAuth;       // PRD v3.0: webhook authentication config
   };
 }
 
@@ -140,7 +144,9 @@ export type JobStatus =
   | 'idle'
   | 'debating_chatgpt'
   | 'debating_gemini'
+  | 'awaiting_user_input'  // PRD v3.0: paused for undefined term clarification
   | 'complete'
+  | 'consensus_failed'     // PRD v3.0: max rounds reached without consensus
   | 'error';
 
 export interface JobState {
@@ -375,4 +381,146 @@ export interface JobSummary {
 export interface ListJobsOutput {
   jobs: JobSummary[];
   total: number;
+}
+
+// ----------------------------------------------------------------------------
+// PRD v3.0 New Features
+// ----------------------------------------------------------------------------
+
+// Webhook Configuration (PRD v3.0)
+export interface WebhookAuth {
+  type: 'bearer' | 'hmac';
+  token?: string;  // Required for bearer
+  secret?: string; // Generated for HMAC, returned to user
+}
+
+export interface WebhookPayload {
+  jobId: string;
+  event: 'user_input_required';
+  reason: 'undefined_term_stall' | 'consensus_conflict';
+  details: {
+    term?: string;
+    context?: string;
+    researchAttempts?: number;
+    ambiguousResults?: string[];
+    unresolvedSections?: string[];
+  };
+  responseUrl: string;
+  timeoutAt: string;
+}
+
+// Divergence Report (PRD v3.0 - Consensus Failure)
+export interface DivergenceReport {
+  format: 'structured_json';
+  reportVersion: '1.0';
+  unresolvedSections: UnresolvedSection[];
+  recommendedAction: string;
+  totalUnresolvedIssues: number;
+  metricsSummary: {
+    roundsCompleted: number;
+    convergenceRate: number;  // 0.0 to 1.0
+    avgIssuesPerRound: number;
+  };
+}
+
+export interface UnresolvedSection {
+  section: string;
+  sectionLineNumbers: [number, number];
+  chatgptPosition?: CriticPosition;
+  geminiPosition?: CriticPosition;
+  claudeAssessment: ClaudeAssessment;
+  impactedRequirements: string[];
+  roundFirstRaised: number;
+}
+
+export interface CriticPosition {
+  summary: string;
+  rationale: string;
+  confidence: 'low' | 'medium' | 'high';
+}
+
+export interface ClaudeAssessment {
+  summary: string;
+  recommendation: string;
+  blockingSeverity: 'low' | 'medium' | 'high';
+}
+
+export interface EscalationOptions {
+  acceptBestEffort: {
+    action: string;
+    riskLevel: 'low' | 'medium' | 'high';
+    rationale: string;
+  };
+  manualResolve: {
+    action: string;
+    estimatedTime: string;
+    guidedQuestions: string[];
+  };
+  targetedRedebate: {
+    action: string;
+    sections: string[];
+    additionalRounds: number;
+    estimatedCost: string;
+    costBreakdown: {
+      calculation: string;
+      chatgptCost: string;
+      geminiCost: string;
+      totalEstimate: string;
+    };
+    estimatedTime: string;
+    completeExample: {
+      description: string;
+      code: string;
+      notes: string[];
+    };
+  };
+}
+
+// Terminology Research (PRD v3.0)
+export interface TerminologyResearch {
+  term: string;
+  found: boolean;
+  fullName?: string;
+  version?: string;
+  sourceUrl?: string;
+  multipleStandards?: {
+    name: string;
+    version: string;
+    url: string;
+    releasedDate?: string;
+  }[];
+  needsUserClarification: boolean;
+}
+
+// Loop Detection (PRD v3.0)
+export interface IssueLoop {
+  issue: string;
+  timeline: LoopEvent[];
+  detectedAtRound: number;
+}
+
+export interface LoopEvent {
+  round: number;
+  critic: CriticModel;
+  action: 'raised' | 'accepted' | 'rejected' | 'raised_again';
+}
+
+// Reversion Tracking (PRD v3.0)
+export interface Reversion {
+  round: number;
+  change: string;
+  reason: string;
+  originalCritic: CriticModel;
+  reversingCritic: CriticModel;
+}
+
+// Enhanced Stats for v3.0
+export interface GauntletStatsV3 extends GauntletStats {
+  terminologyResearched?: string[];
+  cacheHits?: number;
+  cacheMisses?: number;
+  reversions?: Reversion[];
+  reversionCount?: number;
+  highChurn?: boolean;
+  loopsDetected?: IssueLoop[];
 }
