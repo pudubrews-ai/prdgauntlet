@@ -21,6 +21,7 @@ export interface GauntletInput {
     includeTranscripts?: boolean;
     transcriptSummaryOnly?: boolean; // PRD v3.0: condensed summaries instead of full exchanges
     targetedSections?: string[];     // PRD v3.0: for targeted re-debate on specific sections
+    useFullConsensus?: boolean;      // PRD v3.0: use 5-threshold consensus validation
     forceUnlockReverts?: boolean; // Override revert locks in exceptional cases
     models?: {
       claude?: string;
@@ -41,6 +42,8 @@ export interface GauntletOutput {
     gemini?: DebateSummary | DebateTranscript;
   };
   stats: GauntletStats;
+  divergenceReport?: DivergenceReport & { escalationOptions: EscalationOptions }; // v3.0
+  webhookSecret?: string; // v3.0: HMAC secret for webhook verification
 }
 
 export interface GauntletStats {
@@ -61,6 +64,17 @@ export interface GauntletStats {
     reason: string;
   }>;
   highConflictSections?: string[];
+  // v3.0 enhancements
+  cacheStats?: {
+    hits: number;
+    misses: number;
+    entries: number;
+  };
+  rollingAverageTokens?: Array<{
+    model: ModelName;
+    avgTokens: number;
+    sampleCount: number;
+  }>;
 }
 
 export type GauntletErrorCode =
@@ -111,6 +125,10 @@ export interface DebateResult {
     defender: number;
     critic: number;
   };
+  // v3.0 enhancements
+  loopsDetected?: number;
+  transcriptCompressed?: boolean;
+  sizeExceeded?: boolean;
 }
 
 // ----------------------------------------------------------------------------

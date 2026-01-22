@@ -29,8 +29,19 @@ import {
   formatCriticFollowUpMessage,
   type CriticPromptMetadata,
 } from '../prompts/critic.js';
-import { detectConsensus, isMalformedResponse, extractUnresolvedConcerns } from './consensus.js';
+import {
+  detectConsensus,
+  isMalformedResponse,
+  extractUnresolvedConcerns,
+  checkFullConsensus,
+} from './consensus.js';
 import { parseDefenderResponse, isRequestingClarification } from './parser.js';
+import { LoopDetector } from '../utils/loopDetection.js';
+import { checkPrdSize, willExceedOutputLimit } from '../utils/sizeEnforcement.js';
+import {
+  generateTranscriptSummary,
+  shouldCompressTranscript,
+} from '../utils/transcriptSummary.js';
 
 export interface DebateConfig {
   maxRounds: number;
@@ -38,6 +49,9 @@ export interface DebateConfig {
   maxEstimatedCost?: number;
   retryOnTimeout: boolean;
   metadata?: CriticPromptMetadata;
+  transcriptSummaryOnly?: boolean; // v3.0: Return condensed 2-5KB summary instead of full transcript
+  targetedSections?: string[]; // v3.0: Section paths for targeted re-debate
+  useFullConsensus?: boolean; // v3.0: Use 5-threshold consensus validation
 }
 
 export interface DebateContext {
@@ -55,6 +69,17 @@ export async function runDebate(
   gauntletConfig: GauntletConfig
 ): Promise<DebateResult> {
   const { jobId, prd, critic, config, costTracker, changelog, previousChangelog } = context;
+
+  // v3.0: Check input size
+  const inputCheck = checkPrdSize(prd, true);
+  if (!inputCheck.ok) {
+    logger.logError('Input PRD too large', {
+      jobId,
+      sizeKB: inputCheck.sizeKB,
+      limitKB: inputCheck.limitKB,
+    });
+    throw new Error(inputCheck.error);
+  }
 
   // Initialize clients with configurable timeout
   const defender = new ClaudeClient(
@@ -78,6 +103,10 @@ export async function runDebate(
   let unresolvedConcerns: string[] = [];
   let totalDefenderTokens = 0;
   let totalCriticTokens = 0;
+
+  // v3.0: Initialize loop detector
+  const loopDetector = new LoopDetector();
+  let newIssuesThisRound = 0;
 
   // FR7: Set initial PRD for diff tracking
   changelog.setInitialPrd(prd);
@@ -163,12 +192,48 @@ export async function runDebate(
         output: criticResponse.usage.outputTokens,
       });
 
-      // Check for consensus
-      const consensusResult = detectConsensus(criticResponse.content);
-      if (consensusResult.isConsensus) {
-        logger.logConsensusReached(jobId, critic, round);
-        outcome = 'consensus';
-        break;
+      // v3.0: Track issues for loop detection
+      const issuesInResponse = extractUnresolvedConcerns(criticResponse.content);
+      newIssuesThisRound = issuesInResponse.length;
+
+      for (const issue of issuesInResponse) {
+        loopDetector.recordIssueRaised(round, critic, issue);
+      }
+
+      // v3.0: Check for consensus using full 5-threshold validation if enabled
+      if (config.useFullConsensus) {
+        const fullConsensusCheck = checkFullConsensus({
+          currentRound: round,
+          currentPrd,
+          critiqueResponse: criticResponse.content,
+          newIssuesThisRound,
+        });
+
+        if (fullConsensusCheck.consensusReached) {
+          logger.logConsensusReached(jobId, critic, round);
+          logger.logInfo('v3.0 Full consensus validated', {
+            jobId,
+            round,
+            details: fullConsensusCheck.details,
+          });
+          outcome = 'consensus';
+          break;
+        } else if (fullConsensusCheck.failedThresholds.length > 0) {
+          logger.logDebug('Consensus thresholds not met', {
+            jobId,
+            round,
+            failedThresholds: fullConsensusCheck.failedThresholds,
+            details: fullConsensusCheck.details,
+          });
+        }
+      } else {
+        // Standard consensus detection (v2.6 compatibility)
+        const consensusResult = detectConsensus(criticResponse.content);
+        if (consensusResult.isConsensus) {
+          logger.logConsensusReached(jobId, critic, round);
+          outcome = 'consensus';
+          break;
+        }
       }
 
       // Check for malformed response
@@ -233,6 +298,23 @@ export async function runDebate(
 
       // Update PRD if we got one
       if (parsed.updatedPrd) {
+        // v3.0: Check output size before accepting update
+        const sizeCheck = willExceedOutputLimit(currentPrd, parsed.updatedPrd);
+        if (sizeCheck.willExceed) {
+          logger.logWarn('Output size limit would be exceeded, stopping at last complete round', {
+            jobId,
+            round,
+            currentSizeKB: sizeCheck.currentSizeKB,
+            estimatedSizeKB: sizeCheck.estimatedSizeKB,
+            limitKB: sizeCheck.limitKB,
+          });
+          outcome = 'early_stop';
+          unresolvedConcerns = [
+            `Output PRD would exceed ${sizeCheck.limitKB}KB limit (estimated: ${sizeCheck.estimatedSizeKB.toFixed(1)}KB). Stopped at Round ${round - 1}.`,
+          ];
+          break;
+        }
+
         currentPrd = parsed.updatedPrd;
       }
 
@@ -240,6 +322,9 @@ export async function runDebate(
       if (parsed.roundDelta) {
         const entry = changelog.addChange(parsed.roundDelta, critic, round, undefined, currentPrd);
         changes.push(entry);
+
+        // v3.0: Record changes for loop detection (using the entry)
+        loopDetector.recordChanges(round, critic, [entry]);
       }
 
       // Update defender history
@@ -276,6 +361,20 @@ export async function runDebate(
     }
   }
 
+  // v3.0: Detect loops
+  const detectedLoops = loopDetector.detectLoops(round);
+  if (detectedLoops.length > 0) {
+    logger.logWarn('Loops detected in debate', {
+      jobId,
+      critic,
+      loopCount: detectedLoops.length,
+      loops: detectedLoops.map((l) => ({
+        issue: l.issue,
+        roundsInvolved: l.timeline.map((t) => t.round),
+      })),
+    });
+  }
+
   // Build transcript
   const transcript: DebateTranscript = {
     summary: {
@@ -287,6 +386,38 @@ export async function runDebate(
     messages,
   };
 
+  // v3.0: Generate transcript summary if requested or if too large
+  let transcriptCompressed = false;
+  if (config.transcriptSummaryOnly || shouldCompressTranscript(transcript)) {
+    const summary = generateTranscriptSummary(transcript);
+    logger.logInfo('Transcript compressed to summary', {
+      jobId,
+      originalMessages: transcript.messages.length,
+      summaryEntries: summary.length,
+    });
+    transcriptCompressed = true;
+
+    // Replace messages with summary (convert to message format)
+    transcript.messages = summary.map((entry) => ({
+      role: 'summary' as any,
+      content: `Round ${entry.round}: ${entry.keyCritiquePoints}. Changes: ${entry.changesSummary || 'None'}`,
+      timestamp: entry.timestamp,
+    }));
+  }
+
+  // v3.0: Final output size check
+  const outputCheck = checkPrdSize(currentPrd, false);
+  if (!outputCheck.ok) {
+    logger.logWarn('Output PRD exceeds size limit', {
+      jobId,
+      sizeKB: outputCheck.sizeKB,
+      limitKB: outputCheck.limitKB,
+    });
+  }
+
+  // v3.0: Record job completion for rolling average
+  costTracker.recordJobCompletion();
+
   return {
     finalPrd: currentPrd,
     transcript,
@@ -297,6 +428,10 @@ export async function runDebate(
       defender: totalDefenderTokens,
       critic: totalCriticTokens,
     },
+    // v3.0 metadata
+    loopsDetected: detectedLoops.length,
+    transcriptCompressed,
+    sizeExceeded: !outputCheck.ok,
   };
 }
 

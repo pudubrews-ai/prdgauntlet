@@ -108,6 +108,38 @@ class MemoryMonitor {
       isCritical: heapUsedPercent >= HEAP_CRITICAL_PERCENT,
     };
   }
+
+  /**
+   * Check if system has capacity for new work
+   */
+  checkCapacity(): {
+    hasCapacity: boolean;
+    heapUsedPercent: number;
+    recommendation?: string;
+  } {
+    const stats = this.getStats();
+
+    if (stats.isCritical) {
+      return {
+        hasCapacity: false,
+        heapUsedPercent: stats.heapUsedPercent,
+        recommendation: 'System at capacity. Please retry in 5 minutes.',
+      };
+    }
+
+    if (stats.isWarning) {
+      return {
+        hasCapacity: true,
+        heapUsedPercent: stats.heapUsedPercent,
+        recommendation: 'System memory is elevated but still accepting requests.',
+      };
+    }
+
+    return {
+      hasCapacity: true,
+      heapUsedPercent: stats.heapUsedPercent,
+    };
+  }
 }
 
 // Export singleton instance

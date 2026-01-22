@@ -50,6 +50,29 @@ const RunGauntletParamsSchema = {
         .boolean()
         .optional()
         .describe('Include full debate transcripts in output (default: false)'),
+      transcriptSummaryOnly: z
+        .boolean()
+        .optional()
+        .describe('v3.0: Return condensed 2-5KB summaries instead of full transcripts'),
+      targetedSections: z
+        .array(z.string())
+        .optional()
+        .describe('v3.0: Hierarchical section paths for targeted re-debate'),
+      useFullConsensus: z
+        .boolean()
+        .optional()
+        .describe('v3.0: Use 5-threshold consensus validation (default: true)'),
+      webhookUrl: z
+        .string()
+        .optional()
+        .describe('v3.0: URL for async user input notifications'),
+      webhookAuth: z
+        .object({
+          type: z.enum(['bearer', 'hmac']).describe('Authentication method'),
+          token: z.string().optional().describe('Bearer token (required for bearer auth)'),
+        })
+        .optional()
+        .describe('v3.0: Webhook authentication configuration'),
       models: z
         .object({
           chatgpt: z.string().optional().describe('ChatGPT model ID (default: gpt-4o)'),
@@ -94,13 +117,13 @@ const ListJobsParamsSchema = {
 export function createServer(config: GauntletConfig): McpServer {
   const server = new McpServer({
     name: 'prd-gauntlet',
-    version: '1.0.0',
+    version: '3.0.0', // Updated to v3.0 with enhanced features
   });
 
   // Register run_prd_gauntlet tool
   server.tool(
     'run_prd_gauntlet',
-    'Orchestrate multi-model PRD refinement. Claude defends the PRD against critiques from ChatGPT and Gemini until consensus is reached.',
+    'v3.0: Orchestrate multi-model PRD refinement with enhanced consensus validation, loop detection, size enforcement, and optional webhooks. Claude defends the PRD against critiques from ChatGPT and Gemini until 5-threshold consensus is reached.',
     RunGauntletParamsSchema,
     async (params) => {
       logger.logDebug('run_prd_gauntlet called', { hasMetadata: !!params.metadata });

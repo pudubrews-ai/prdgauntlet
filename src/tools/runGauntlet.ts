@@ -20,6 +20,10 @@ import { isModelAvailable, getValidationCache } from '../clients/validator.js';
 import { runDebate, type DebateConfig } from '../debate/engine.js';
 import { checkPrdSize } from '../utils/tokens.js';
 import { getGlobalRateLimiter, initGlobalRateLimiter } from '../utils/rateLimiter.js';
+import { memoryMonitor } from '../utils/memoryMonitor.js';
+import { validateWebhookUrl, generateHmacSecret } from '../utils/webhook.js';
+import { getTerminologyCacheStats } from '../utils/terminologyCache.js';
+import { generateDivergenceReport } from '../utils/divergenceReport.js';
 
 // Input schema for validation
 export const RunGauntletInputSchema = z.object({
@@ -39,6 +43,16 @@ export const RunGauntletInputSchema = z.object({
       apiTimeoutMs: z.number().positive().optional(),
       includeTranscripts: z.boolean().optional(),
       forceUnlockReverts: z.boolean().optional(), // FR6: Override revert locks
+      transcriptSummaryOnly: z.boolean().optional(), // v3.0: Return condensed summary
+      targetedSections: z.array(z.string()).optional(), // v3.0: Sections for targeted re-debate
+      useFullConsensus: z.boolean().optional(), // v3.0: Use 5-threshold consensus
+      webhookUrl: z.string().optional(), // v3.0: Webhook for notifications
+      webhookAuth: z
+        .object({
+          type: z.enum(['bearer', 'hmac']),
+          token: z.string().optional(),
+        })
+        .optional(),
       models: z
         .object({
           claude: z.string().optional(),
@@ -102,6 +116,37 @@ export async function handleRunGauntlet(
         retryAfter: rateCheck.retryAfter,
       },
     };
+  }
+
+  // v3.0: Check memory capacity
+  const memoryCapacity = memoryMonitor.checkCapacity();
+  if (!memoryCapacity.hasCapacity) {
+    logger.logWarn('Memory capacity exceeded', {
+      heapUsedPercent: memoryCapacity.heapUsedPercent,
+      recommendation: memoryCapacity.recommendation,
+    });
+    return {
+      error: 'CONFIG_ERROR',
+      message: `Server memory is at ${memoryCapacity.heapUsedPercent.toFixed(1)}% capacity. ${memoryCapacity.recommendation}`,
+    };
+  }
+
+  // v3.0: Validate webhook URL if provided
+  let webhookSecret: string | undefined;
+  if (validInput.config?.webhookUrl) {
+    const webhookValidation = validateWebhookUrl(validInput.config.webhookUrl);
+    if (!webhookValidation.valid) {
+      return {
+        error: 'INVALID_INPUT',
+        message: `Invalid webhook URL: ${webhookValidation.error}`,
+      };
+    }
+
+    // Generate HMAC secret if using HMAC auth
+    if (validInput.config?.webhookAuth?.type === 'hmac') {
+      webhookSecret = generateHmacSecret();
+      logger.logInfo('Generated HMAC webhook secret', { jobId: 'pending' });
+    }
   }
 
   // Merge runtime config
@@ -206,6 +251,10 @@ export async function handleRunGauntlet(
       productContext: validInput.metadata?.productContext,
       constraints: validInput.metadata?.constraints,
     },
+    // v3.0 enhancements
+    transcriptSummaryOnly: validInput.config?.transcriptSummaryOnly,
+    targetedSections: validInput.config?.targetedSections,
+    useFullConsensus: validInput.config?.useFullConsensus ?? true, // Default to v3.0 full consensus
   };
 
   let currentPrd = validInput.prd;
@@ -348,6 +397,12 @@ export async function handleRunGauntlet(
     }
   }
 
+  // v3.0: Check if consensus was reached by all critics
+  const allDebatesReached = Object.values(debates).every(
+    (d) => d && d.outcome === 'consensus'
+  );
+  const consensusFailed = !allDebatesReached && !stoppedEarly;
+
   // Build final output
   const tokenCounts = costTracker.getTokenCountByModel();
   const output: GauntletOutput = {
@@ -368,13 +423,60 @@ export async function handleRunGauntlet(
     output.debates = debates;
   }
 
+  // v3.0: Add cache stats if terminology research was used
+  const cacheStats = getTerminologyCacheStats();
+  if (cacheStats.hits > 0 || cacheStats.misses > 0) {
+    output.stats.cacheStats = {
+      hits: cacheStats.hits,
+      misses: cacheStats.misses,
+      entries: cacheStats.size,
+    };
+  }
+
+  // v3.0: Add rolling average stats
+  const rollingStats = CostTracker.getRollingAverageStats();
+  if (rollingStats.length > 0) {
+    output.stats.rollingAverageTokens = rollingStats;
+  }
+
+  // v3.0: Generate divergence report if consensus failed
+  if (consensusFailed) {
+    // Calculate total issues from changelog
+    const totalIssuesRaised = changelog.getChangelog().length;
+    const issuesResolved = changelog.getChangelog().filter(
+      (c) => !c.revertedChange
+    ).length;
+
+    const divergenceReport = generateDivergenceReport({
+      finalPrd: currentPrd,
+      changelog: changelog.getChangelog(),
+      chatgptFinalCritique: debates.chatgpt?.unresolvedConcerns?.join('; '),
+      geminiFinalCritique: debates.gemini?.unresolvedConcerns?.join('; '),
+      roundsCompleted: totalRounds,
+      totalIssuesRaised,
+      issuesResolved,
+    });
+
+    output.divergenceReport = divergenceReport;
+
+    logger.logInfo('Divergence report generated', {
+      jobId,
+      unresolvedSections: divergenceReport.unresolvedSections.length,
+    });
+  }
+
+  // v3.0: Include webhook secret if generated
+  if (webhookSecret) {
+    output.webhookSecret = webhookSecret;
+  }
+
   // Complete job
   jobStore.complete(jobId, output);
 
   logger.logJobCompleted(jobId, {
     rounds: totalRounds,
     cost: costTracker.getEstimatedCostRounded(),
-    outcome: stoppedEarly ? 'early_stop' : 'complete',
+    outcome: stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
   return output;
