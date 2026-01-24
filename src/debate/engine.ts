@@ -290,9 +290,38 @@ export async function runDebate(
       // Parse defender response
       const parsed = parseDefenderResponse(defenderResponse.content);
 
+      // Log parse errors
+      if (parsed.parseError) {
+        logger.logWarn('Defender response parse error', {
+          jobId,
+          round,
+          error: parsed.parseError,
+          responseLength: defenderResponse.content.length,
+        });
+      }
+
       if (parsed.isConsensusReached) {
         logger.logConsensusReached(jobId, critic, round);
         outcome = 'consensus';
+        break;
+      }
+
+      // CRITICAL: Defender must return updated PRD
+      if (!parsed.updatedPrd && parsed.roundDelta) {
+        // Defender returned changes but no PRD - this is a protocol violation
+        logger.logError('Defender returned changes without updated PRD', {
+          jobId,
+          round,
+          critic,
+          hasRoundDelta: !!parsed.roundDelta,
+          responsePreview: defenderResponse.content.substring(0, 200),
+        });
+
+        // This is a critical error - we cannot continue without the PRD
+        outcome = 'early_stop';
+        unresolvedConcerns = [
+          `Round ${round}: Defender failed to return updated PRD. Protocol violation - cannot continue debate.`,
+        ];
         break;
       }
 
