@@ -177,6 +177,43 @@ Complete section...`;
       expect(result.diagnostics.truncationIndicators).toContain('trailing ellipsis');
     });
 
+    it('should detect placeholder text indicating incremental changes', () => {
+      const prd = `# PRD
+
+## Overview
+Brief intro.
+
+[Previous sections remain unchanged through FR4.1...]
+
+## FR4.2: New Feature
+Details here.
+
+[Remaining sections remain unchanged...]`;
+
+      const result = validatePrdCompleteness(prd);
+
+      expect(result.isValid).toBe(false);
+      expect(result.issues.some(i => i.includes('placeholder text'))).toBe(true);
+      expect(result.diagnostics.truncationIndicators).toContain('incremental delta');
+    });
+
+    it('should detect various placeholder patterns', () => {
+      const patterns = [
+        '[Previous sections unchanged]',
+        '[Sections 1-3 remain unchanged]',
+        '[No changes to previous sections]',
+        '[Rest of document unchanged]',
+      ];
+
+      patterns.forEach(pattern => {
+        const prd = `# PRD\n\n## Overview\nContent.\n\n${pattern}`;
+        const result = validatePrdCompleteness(prd);
+
+        expect(result.isValid).toBe(false);
+        expect(result.issues.some(i => i.includes('placeholder text'))).toBe(true);
+      });
+    });
+
     it('should detect incomplete markdown table', () => {
       const prd = `# PRD
 

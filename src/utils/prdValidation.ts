@@ -122,6 +122,24 @@ function checkTruncationIndicators(prd: string): {
     indicators.push('incomplete table');
   }
 
+  // Pattern 4: Placeholder text indicating incremental changes instead of full PRD
+  const placeholderPatterns = [
+    /\[Previous sections remain unchanged/i,
+    /\[Remaining sections remain unchanged/i,
+    /\[Previous sections unchanged/i,
+    /\[Sections .+ remain unchanged/i,
+    /\[No changes to previous sections/i,
+    /\[Rest of document unchanged/i,
+  ];
+
+  for (const pattern of placeholderPatterns) {
+    if (pattern.test(prd)) {
+      issues.push('PRD contains placeholder text instead of full document - defender returned incremental changes instead of complete PRD');
+      indicators.push('incremental delta');
+      break;
+    }
+  }
+
   return {
     valid: issues.length === 0,
     issues,
