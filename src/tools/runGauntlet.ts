@@ -24,6 +24,7 @@ import { memoryMonitor } from '../utils/memoryMonitor.js';
 import { validateWebhookUrl, generateHmacSecret } from '../utils/webhook.js';
 import { getTerminologyCacheStats } from '../utils/terminologyCache.js';
 import { generateDivergenceReport } from '../utils/divergenceReport.js';
+import { saveJobToDisk } from '../utils/jobPersistence.js';
 
 // Input schema for validation
 export const RunGauntletInputSchema = z.object({
@@ -478,6 +479,18 @@ export async function handleRunGauntlet(
     cost: costTracker.getEstimatedCostRounded(),
     outcome: stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
+
+  // Auto-save completed job to disk
+  try {
+    await saveJobToDisk(jobId, output);
+    logger.logInfo('Job auto-saved to disk', { jobId });
+  } catch (error) {
+    logger.logWarn('Failed to auto-save job to disk', {
+      jobId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    // Don't fail the job if save fails
+  }
 
   return output;
 }

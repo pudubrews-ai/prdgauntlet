@@ -11,6 +11,10 @@ import { handleCheckStatus } from './tools/checkStatus.js';
 import { handleGetTranscript } from './tools/getTranscript.js';
 import { handleListJobs } from './tools/listJobs.js';
 import { handleClearCache } from './tools/clearCache.js';
+import { handleSaveJobOutput } from './tools/saveJobOutput.js';
+import { handleLoadSavedJob } from './tools/loadSavedJob.js';
+import { handleGetSavedPrd } from './tools/getSavedPrd.js';
+import { handleListSavedJobs } from './tools/listSavedJobs.js';
 import { logger } from './utils/logger.js';
 
 // Define Zod schemas for MCP tool registration
@@ -113,6 +117,21 @@ const ListJobsParamsSchema = {
     .optional()
     .describe('Maximum number of jobs to return (default: 50, max: 100)'),
 };
+
+const SaveJobOutputParamsSchema = {
+  jobId: z.string().uuid().describe('The job ID to save to disk'),
+};
+
+const LoadSavedJobParamsSchema = {
+  jobId: z.string().uuid().describe('The saved job ID to load from disk'),
+};
+
+const GetSavedPrdParamsSchema = {
+  jobId: z.string().uuid().describe('The saved job ID to extract PRD from'),
+  outputFile: z.string().optional().describe('Optional file path to save PRD markdown'),
+};
+
+const ListSavedJobsParamsSchema = {};
 
 export function createServer(config: GauntletConfig): McpServer {
   const server = new McpServer({
@@ -283,7 +302,139 @@ export function createServer(config: GauntletConfig): McpServer {
     }
   );
 
-  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs, clear_terminology_cache');
+  // Register save_job_output tool
+  server.tool(
+    'save_job_output',
+    'Manually save a completed gauntlet job to disk for later retrieval. Jobs are auto-saved on completion, but this can be used for ephemeral jobs.',
+    SaveJobOutputParamsSchema,
+    async (params) => {
+      logger.logDebug('save_job_output called', { jobId: params.jobId });
+
+      const result = await handleSaveJobOutput(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register load_saved_job tool
+  server.tool(
+    'load_saved_job',
+    'Load a complete gauntlet job output from disk. Returns full output including PRD, changelog, debates, and stats without truncation.',
+    LoadSavedJobParamsSchema,
+    async (params) => {
+      logger.logDebug('load_saved_job called', { jobId: params.jobId });
+
+      const result = await handleLoadSavedJob(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register get_saved_prd tool
+  server.tool(
+    'get_saved_prd',
+    'Extract just the final PRD from a saved job. Optionally save to a markdown file on disk. No truncation.',
+    GetSavedPrdParamsSchema,
+    async (params) => {
+      logger.logDebug('get_saved_prd called', { jobId: params.jobId, outputFile: params.outputFile });
+
+      const result = await handleGetSavedPrd(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register list_saved_jobs tool
+  server.tool(
+    'list_saved_jobs',
+    'List all saved gauntlet jobs on disk with metadata. Shows job ID, save date, title, rounds, and cost.',
+    ListSavedJobsParamsSchema,
+    async () => {
+      logger.logDebug('list_saved_jobs called');
+
+      const result = await handleListSavedJobs({}, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs, clear_terminology_cache, save_job_output, load_saved_job, get_saved_prd, list_saved_jobs');
 
   return server;
 }
