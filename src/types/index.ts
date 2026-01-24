@@ -99,7 +99,7 @@ export type ModelName = 'claude' | CriticModel;
 
 export interface DebateSummary {
   rounds: number;
-  outcome: 'consensus' | 'max_rounds' | 'early_stop';
+  outcome: 'consensus' | 'max_rounds' | 'early_stop' | 'incomplete_output';
   keyChanges: string[];
   unresolvedConcerns?: string[];
 }
@@ -119,7 +119,7 @@ export interface DebateResult {
   finalPrd: string;
   transcript: DebateTranscript;
   changes: ChangeEntry[];
-  outcome: 'consensus' | 'max_rounds' | 'early_stop';
+  outcome: 'consensus' | 'max_rounds' | 'early_stop' | 'incomplete_output';
   unresolvedConcerns: string[];
   tokensUsed: {
     defender: number;
@@ -129,6 +129,20 @@ export interface DebateResult {
   loopsDetected?: number;
   transcriptCompressed?: boolean;
   sizeExceeded?: boolean;
+  // v4.0 enhancements
+  prdValidation?: {
+    isValid: boolean;
+    issues: string[];
+    diagnostics: {
+      endsCleanly: boolean;
+      hasValidMarkdown: boolean;
+      hasMinimumSections: boolean;
+      lastContent: string;
+      expectedSections?: string[];
+      missingSections?: string[];
+      truncationIndicators?: string[];
+    };
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -165,6 +179,7 @@ export type JobStatus =
   | 'awaiting_user_input'  // PRD v3.0: paused for undefined term clarification
   | 'complete'
   | 'consensus_failed'     // PRD v3.0: max rounds reached without consensus
+  | 'incomplete_output'    // PRD v4.0: job completed but PRD is truncated/invalid
   | 'error';
 
 export interface JobState {

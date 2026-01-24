@@ -10,6 +10,7 @@ import type {
   GauntletConfig,
   DebateSummary,
   CriticModel,
+  JobStatus,
 } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
 import { CostTracker } from '../utils/cost.js';
@@ -404,6 +405,11 @@ export async function handleRunGauntlet(
   );
   const consensusFailed = !allDebatesReached && !stoppedEarly;
 
+  // v4.0: Check if any debate produced incomplete output
+  const hasIncompleteOutput = Object.values(debates).some(
+    (d) => d && d.outcome === 'incomplete_output'
+  );
+
   // Build final output
   const tokenCounts = costTracker.getTokenCountByModel();
   const output: GauntletOutput = {
@@ -471,13 +477,21 @@ export async function handleRunGauntlet(
     output.webhookSecret = webhookSecret;
   }
 
-  // Complete job
-  jobStore.complete(jobId, output);
+  // v4.0: Determine final job status based on outcomes
+  let finalStatus: JobStatus = 'complete';
+  if (hasIncompleteOutput) {
+    finalStatus = 'incomplete_output';
+  } else if (consensusFailed) {
+    finalStatus = 'consensus_failed';
+  }
+
+  // Complete job with appropriate status
+  jobStore.complete(jobId, output, finalStatus);
 
   logger.logJobCompleted(jobId, {
     rounds: totalRounds,
     cost: costTracker.getEstimatedCostRounded(),
-    outcome: stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
+    outcome: hasIncompleteOutput ? 'incomplete_output' : stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
   // Auto-save completed job to disk

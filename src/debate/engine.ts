@@ -42,6 +42,7 @@ import {
   generateTranscriptSummary,
   shouldCompressTranscript,
 } from '../utils/transcriptSummary.js';
+import { validatePrdCompleteness, formatValidationError } from '../utils/prdValidation.js';
 
 export interface DebateConfig {
   maxRounds: number;
@@ -444,6 +445,31 @@ export async function runDebate(
     });
   }
 
+  // v4.0: Validate PRD completeness before marking as complete
+  const validationResult = validatePrdCompleteness(currentPrd);
+  if (!validationResult.isValid) {
+    logger.logError('PRD validation failed - output is incomplete', {
+      jobId,
+      critic,
+      round,
+      outcome,
+      issueCount: validationResult.issues.length,
+      issues: validationResult.issues,
+      diagnostics: validationResult.diagnostics,
+    });
+
+    // Override outcome to indicate incomplete output
+    outcome = 'incomplete_output' as any;
+
+    // Add validation failure details to unresolved concerns
+    const validationError = formatValidationError(validationResult);
+    unresolvedConcerns.push(
+      'PRD Validation Failed - Output is Incomplete',
+      ...validationResult.issues,
+      validationError
+    );
+  }
+
   // v3.0: Record job completion for rolling average
   costTracker.recordJobCompletion();
 
@@ -461,6 +487,8 @@ export async function runDebate(
     loopsDetected: detectedLoops.length,
     transcriptCompressed,
     sizeExceeded: !outputCheck.ok,
+    // v4.0 metadata
+    prdValidation: validationResult,
   };
 }
 

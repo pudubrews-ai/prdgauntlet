@@ -66,7 +66,7 @@ export class JobStore {
     job.lastUpdate = new Date().toISOString();
 
     // Clear round info when not in debate
-    if (status === 'complete' || status === 'error' || status === 'idle') {
+    if (status === 'complete' || status === 'error' || status === 'idle' || status === 'incomplete_output' || status === 'consensus_failed') {
       job.currentRound = undefined;
       job.currentModel = undefined;
     }
@@ -108,13 +108,14 @@ export class JobStore {
     job.lastUpdate = new Date().toISOString();
   }
 
-  complete(jobId: string, result: GauntletOutput): void {
+  complete(jobId: string, result: GauntletOutput, status: JobStatus = 'complete'): void {
     const job = this.jobs.get(jobId);
     if (!job) {
       throw new Error(`Job not found: ${jobId}`);
     }
 
-    job.status = 'complete';
+    // v4.0: Support custom status (e.g., 'incomplete_output', 'consensus_failed')
+    job.status = status;
     job.result = result;
     job.lastUpdate = new Date().toISOString();
     job.currentRound = undefined;
@@ -168,7 +169,7 @@ export class JobStore {
     let removed = 0;
 
     for (const [jobId, job] of this.jobs.entries()) {
-      if (job.status === 'complete' || job.status === 'error') {
+      if (job.status === 'complete' || job.status === 'error' || job.status === 'incomplete_output' || job.status === 'consensus_failed') {
         const lastUpdate = new Date(job.lastUpdate).getTime();
         if (now - lastUpdate > maxAge) {
           this.jobs.delete(jobId);
