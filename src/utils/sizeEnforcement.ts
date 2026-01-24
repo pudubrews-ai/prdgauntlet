@@ -8,7 +8,7 @@ import { logger } from './logger.js';
  * Size limits (configurable via env)
  */
 export const INPUT_SIZE_LIMIT_KB =
-  parseInt(process.env.INPUT_SIZE_LIMIT_KB || '50', 10);
+  parseInt(process.env.INPUT_SIZE_LIMIT_KB || '200', 10);
 export const OUTPUT_SIZE_LIMIT_KB =
   parseInt(process.env.OUTPUT_SIZE_LIMIT_KB || '75', 10);
 
