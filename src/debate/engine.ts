@@ -370,6 +370,15 @@ export async function runDebate(
 
         // v3.0: Record changes for loop detection (using the entry)
         loopDetector.recordChanges(round, critic, [entry]);
+      } else if (parsed.updatedPrd && parsed.updatedPrd !== prd) {
+        // Bug 2 (S7): Defender updated document without providing a round delta changelog.
+        // Do NOT create a synthetic changelog entry — that would inflate totalIssuesResolved.
+        // Log a warning so operators can see the gap; accuracy > synthetic coverage.
+        logger.logWarn('Defender updated document without providing round delta changelog', {
+          jobId,
+          round,
+          critic,
+        });
       }
 
       // Update defender history

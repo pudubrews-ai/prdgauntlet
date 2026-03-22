@@ -280,7 +280,7 @@ export interface DebateResult {
 // Change Tracking Types
 // ----------------------------------------------------------------------------
 
-export type ChangeType = 'addition' | 'modification' | 'deletion' | 'revert';
+export type ChangeType = 'addition' | 'modification' | 'deletion' | 'revert' | 'no_change';
 
 export interface ChangeEntry {
   version: number;

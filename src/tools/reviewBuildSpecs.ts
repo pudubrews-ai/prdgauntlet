@@ -377,7 +377,9 @@ async function runSpecReviewDebate({
   let currentDoc = concatenatedInput;
   let totalRounds = 0;
   const debates: BuildSpecReviewOutput['debates'] = {};
-  let stoppedEarly = false;
+  // Bug 1: Split stoppedEarly into resourceCapExhausted (global resource caps only).
+  // ChatGPT early_stop does NOT gate Gemini — only cost/token caps do.
+  let resourceCapExhausted: { reason: 'cost_cap' | 'token_cap'; details: string } | null = null;
 
   // Run ChatGPT debate
   if (chatgptAvailable) {
@@ -401,8 +403,14 @@ async function runSpecReviewDebate({
       jobStore.storeTranscript(jobId, 'chatgpt', result.transcript);
       debates.chatgpt = result.transcript.summary;
 
+      // Bug 1: Only resource caps propagate — not protocol/error early_stop
       if (result.outcome === 'early_stop') {
-        stoppedEarly = true;
+        if (costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)) {
+          resourceCapExhausted = { reason: 'cost_cap', details: result.unresolvedConcerns.join('; ') };
+        } else if (costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)) {
+          resourceCapExhausted = { reason: 'token_cap', details: result.unresolvedConcerns.join('; ') };
+        }
+        // Per-critic outcome is already tracked in debates.chatgpt.outcome
       }
     } catch (error) {
       logger.logProviderError(jobId, 'chatgpt', error instanceof Error ? error.message : 'Unknown');
@@ -412,8 +420,8 @@ async function runSpecReviewDebate({
     skippedCritics.push({ model: 'chatgpt', reason: 'ChatGPT unavailable' });
   }
 
-  // Run Gemini debate
-  if (geminiAvailable && !stoppedEarly) {
+  // Run Gemini debate (if resource caps not exhausted)
+  if (geminiAvailable && !resourceCapExhausted) {
     try {
       jobStore.updateStatus(jobId, 'debating_gemini');
 
@@ -435,15 +443,28 @@ async function runSpecReviewDebate({
       jobStore.storeTranscript(jobId, 'gemini', result.transcript);
       debates.gemini = result.transcript.summary;
 
+      // Bug 1: Same pattern for Gemini
       if (result.outcome === 'early_stop') {
-        stoppedEarly = true;
+        if (costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)) {
+          resourceCapExhausted = { reason: 'cost_cap', details: result.unresolvedConcerns.join('; ') };
+        } else if (costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)) {
+          resourceCapExhausted = { reason: 'token_cap', details: result.unresolvedConcerns.join('; ') };
+        }
       }
     } catch (error) {
       logger.logProviderError(jobId, 'gemini', error instanceof Error ? error.message : 'Unknown');
       skippedCritics.push({ model: 'gemini', reason: 'Provider error (see server logs)' });
     }
-  } else if (!stoppedEarly) {
+  } else if (!resourceCapExhausted) {
     skippedCritics.push({ model: 'gemini', reason: 'Gemini unavailable' });
+  }
+
+  // Bug 1b (S10): If BOTH critics ran but both failed, status → error (not consensus_failed)
+  const allCriticsFailed = Object.keys(debates).length > 0 && Object.values(debates).every(
+    (d) => d && ((d as any).outcome === 'early_stop' || (d as any).outcome === 'error')
+  );
+  if (allCriticsFailed && skippedCritics.length === 0) {
+    logger.logError('All critics failed — marking spec review job as error', { jobId });
   }
 
   // F-1 step 11: Parse final defender output to extract both documents
@@ -478,9 +499,12 @@ async function runSpecReviewDebate({
 
   const allDebatesConsensus = Object.values(debates).every(d => d && (d as any).outcome === 'consensus');
 
+  // Bug 1b (S10): Both critics ran but both failed → error (not consensus_failed)
   // D7: If debate said "complete" but CDR gates fail, downgrade to consensus_failed
   let finalStatus: JobStatus;
-  if (cdrGateFailed) {
+  if (allCriticsFailed && skippedCritics.length === 0) {
+    finalStatus = 'error';
+  } else if (cdrGateFailed) {
     finalStatus = 'consensus_failed';
     logger.logInfo('CDR gates failed, downgrading to consensus_failed', { jobId, cdrFailures });
   } else {
@@ -510,8 +534,14 @@ async function runSpecReviewDebate({
     issuesFound.crossDocument.implicitDependencies +
     issuesFound.crossDocument.missingPrerequisites;
 
-  // Resolved = changelog entries that are not reverts and have no revertedChange pointer
-  const totalIssuesResolved = changelogEntries.filter(c => c.type !== 'revert' && !c.revertedChange).length;
+  // totalIssuesResolved counts only issues the defender explicitly documented
+  // as resolved via the ## Changes This Round changelog. CDR mismatches are
+  // tracked separately and may remain unresolved.
+  // Bug 2 (S7): No synthetic fallback entries — if defender did not emit the block,
+  // resolved count stays 0 (accurate). See also engine.ts warning log.
+  const totalIssuesResolved = changelogEntries.filter(
+    c => c.type !== 'revert' && !c.revertedChange
+  ).length;
   const unresolvedIssues = Math.max(0, totalIssuesFound - totalIssuesResolved);
 
   // Helper to extract rounds from DebateSummary or DebateTranscript
