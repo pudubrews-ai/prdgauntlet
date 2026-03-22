@@ -64,9 +64,11 @@ export function parseDefenderResponse(response: string): ParsedDefenderResponse 
  */
 function stripRoundDeltaBlocks(content: string): string {
   // Match: ## Changes This Round ... (up to next ##-level header, or end of string)
-  const sectionPattern = /(##[#]?\s*Changes\s+This\s+Round[\s\S]*?)(?=\n##[^#]|\n$|$)/i;
-  const match = content.match(sectionPattern);
-  if (!match || match.index === undefined) return content; // No section found — preserve everything
+  const sectionPattern = /(##[#]?\s*Changes\s+This\s+Round[\s\S]*?)(?=\n##[^#]|\n$|$)/gi;
+  const allMatches = [...content.matchAll(sectionPattern)];
+  if (allMatches.length === 0) return content; // No section found — preserve everything
+  const match = allMatches[allMatches.length - 1]; // Take the LAST occurrence
+  if (match.index === undefined) return content;
 
   const sectionStart = match.index;
   const sectionEnd = sectionStart + match[0].length;
@@ -116,7 +118,8 @@ function extractUpdatedPrd(content: string): string | null {
 
 function extractRoundDelta(content: string): RoundDelta | null {
   // Look for JSON in Changes This Round section
-  const changesSection = content.match(/## Changes This Round\s*\n([\s\S]*?)(?=\n## |$)/);
+  const allChanges = [...content.matchAll(/## Changes This Round\s*\n([\s\S]*?)(?=\n## |$)/g)];
+  const changesSection = allChanges.length > 0 ? allChanges[allChanges.length - 1] : null;
 
   if (!changesSection) {
     // Try to find any JSON block

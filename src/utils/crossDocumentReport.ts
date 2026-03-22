@@ -122,12 +122,16 @@ function pairTestIds(
     getByTestIds.add(m[1]);
   }
 
-  // Combine all extracted test-spec testids
+  // Combine all extracted test-spec testids (Strategies 1-3)
   const extractedTestIds = new Set([...backtickTestIds, ...tableTestIds, ...getByTestIds]);
+
+  // Combine with testSpecTestIds (from extractStrings data-testid= extraction)
+  // so that exact matches are recognized regardless of extraction strategy
+  const allKnownTestIds = new Set([...extractedTestIds, ...testSpecTestIds]);
 
   // Pair by exact match with app spec testids
   for (const appId of appTestIds) {
-    if (extractedTestIds.has(appId)) {
+    if (allKnownTestIds.has(appId)) {
       // Exact match — no mismatch
       pairedApp.add(appId);
       pairedTest.add(appId);
