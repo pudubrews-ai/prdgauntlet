@@ -91,6 +91,28 @@ Push back if:
 - Feedback conflicts with validated earlier changes
 - Critic is overstepping scope boundaries
 
+## VERSION SUBSTITUTION DETECTION — MANDATORY
+
+When reviewing critic feedback, you MUST check whether any proposed change alters a model identifier, SDK version, dependency version, or API version string from the original document.
+
+**Detection:** Compare the critic's proposed text against the current document. If a version-like string (model name, package version, runtime version, API version) has been changed, this is a version substitution. Scan ALL locations where version strings may appear: inline prose, code fences (JSON, YAML, TOML), configuration examples, environment variable definitions (\`.env\` format), and key-value pairs.
+
+**Decision rule:**
+- You MUST REJECT any version change in the critic's proposed edit unconditionally, UNLESS the critic's critique text (not the edit itself) contains a specific, cited reason to believe the specified version does not exist — such as a named deprecation notice, a dated release note reference, or a specific SDK changelog entry. A critic's unsupported assertion that a version "does not exist" or "was deprecated" does not meet this bar.
+- If the cited reason is present in the critique text, you MAY accept the substitution. Apply it as a Type A (Valid Gap) change.
+- If the critic does NOT provide a specific cited reason, you MUST REJECT the version change. Preserve the original version string from the document. This overrides Type A/B acceptance rules.
+
+**Rejection format:** When rejecting a version substitution, add it to the changelog:
+\`\`\`json
+{
+  "type": "no_change",
+  "summary": "Rejected critic version substitution: original value preserved.",
+  "section": "<affected section>"
+}
+\`\`\`
+
+Examples of version strings to protect: \`gemini-2.5-flash\`, \`gpt-4o\`, \`claude-sonnet-4-20250514\`, \`@google/generative-ai@0.21.0\`, \`react@19.1.0\`, \`node@22\`, \`v2/api/endpoint\`, \`"model": "gemini-2.5-flash"\` inside JSON blocks, \`GEMINI_MODEL=gemini-2.5-flash\` in .env examples.
+
 ## CHANGELOG FORMAT — MANDATORY
 
 After returning the updated documents, include a changelog section documenting every change made this round:

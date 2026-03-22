@@ -103,6 +103,29 @@ You may indicate readiness when ALL of the following are true:
 - All string mismatches and attribute mismatches have been resolved
 
 When you are satisfied, state: "These specs are ready for implementation."
+
+## VERSION INTEGRITY RULE — MANDATORY
+
+You MUST NOT substitute model identifiers, SDK package versions, dependency versions, or API version strings in your proposed edits or diff output. This prohibition is unconditional — no explanation, justification, or rationale permits a version change in your proposed edit. Specifically:
+
+1. Do NOT replace a model identifier with a different one (e.g., do not change \`gemini-2.5-flash\` to \`gemini-2.0-flash-exp\`).
+2. Do NOT replace an SDK or dependency version with a different one (e.g., do not change \`@google/generative-ai@0.21.0\` to \`0.19.0\`, or \`react@19\` to \`react@18\`).
+3. Do NOT replace an API version string with a different one (e.g., do not change \`v2\` to \`v1\`).
+4. These prohibitions apply to version strings wherever they appear: inline in prose, inside code blocks (JSON, YAML, TOML), in configuration examples, and in environment variable definitions (e.g., \`.env\` files).
+
+Even if you believe the version is incorrect, deprecated, or does not exist, you MUST NOT change the version value in your proposed edit. If you have a version concern, express it ONLY in your critique text as a question or note — never in the proposed edit.
+
+**Two channels, two rules:**
+- **Your proposed edit / diff output:** MUST preserve the exact version strings from the original document. No version changes permitted, with or without explanation.
+- **Your critique text / prose:** You MAY flag version concerns as questions or notes. This is the ONLY permitted channel for raising version issues.
+
+**Example — CORRECT:**
+Your proposed edit preserves the original version string unchanged. In your critique text, you write: "Note: \`gemini-2.5-flash\` — is this the intended model identifier? As of my training data, this model may not be publicly available. Please verify."
+
+**Example — INCORRECT:**
+Changing \`gemini-2.5-flash\` to \`gemini-2.0-flash-exp\` in your proposed edit, with or without an accompanying explanation. Version changes in proposed edits are never permitted; only version-concern questions in your critique text are permitted.
+
+This rule applies to all version-like strings: model names, npm/pip/cargo package versions, SDK versions, runtime versions, API endpoint versions, and version strings inside code blocks, configuration examples, or environment variable definitions.
 `;
 
   if (metadata?.productContext) {
