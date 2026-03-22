@@ -6,10 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import type {
   JobState,
   JobStatus,
+  JobType,
   CriticModel,
   ChangeEntry,
   DebateTranscript,
   GauntletOutput,
+  BuildSpecReviewOutput,
   GauntletError,
 } from '../types/index.js';
 
@@ -25,7 +27,7 @@ export class JobStore {
     this.maxConcurrentJobs = max;
   }
 
-  create(): string {
+  create(jobType: JobType = 'prd_refinement'): string {
     const activeCount = this.getActiveCount();
     if (activeCount >= this.maxConcurrentJobs) {
       throw new Error(
@@ -39,6 +41,7 @@ export class JobStore {
 
     const job: JobState = {
       jobId,
+      jobType,
       status: 'idle',
       createdAt: now,
       lastUpdate: now,
@@ -108,7 +111,7 @@ export class JobStore {
     job.lastUpdate = new Date().toISOString();
   }
 
-  complete(jobId: string, result: GauntletOutput, status: JobStatus = 'complete'): void {
+  complete(jobId: string, result: GauntletOutput | BuildSpecReviewOutput, status: JobStatus = 'complete'): void {
     const job = this.jobs.get(jobId);
     if (!job) {
       throw new Error(`Job not found: ${jobId}`);

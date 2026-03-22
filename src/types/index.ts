@@ -3,6 +3,91 @@
 // ============================================================================
 
 // ----------------------------------------------------------------------------
+// v4.0 Job Type Discriminator
+// ----------------------------------------------------------------------------
+
+export type JobType = 'prd_refinement' | 'build_spec_review';
+
+// ----------------------------------------------------------------------------
+// v4.0 Build Spec Review Types
+// ----------------------------------------------------------------------------
+
+export interface SpecReviewMetadata {
+  title?: string;
+  version?: string;
+  projectContext?: string;
+  constraints?: string[];
+}
+
+export interface BuildSpecReviewInput {
+  appSpecSection: string;
+  testSpec: string;
+  buildRulesSpec?: string;
+  appSpec?: string;
+  metadata?: SpecReviewMetadata;
+  config?: {
+    maxRoundsPerModel?: number;
+    maxTotalTokens?: number;
+    maxEstimatedCost?: number;
+    apiTimeoutMs?: number;
+    includeTranscripts?: boolean;
+    webhookUrl?: string;
+    webhookAuth?: WebhookAuth;
+    models?: {
+      claude?: string;
+      chatgpt?: string;
+      gemini?: string;
+    };
+  };
+}
+
+export interface IssueSummary {
+  type: string;
+  location: string;
+  description: string;
+  severity: 'blocking' | 'warning' | 'info';
+}
+
+export interface CrossDocumentMismatch {
+  type: 'string_mismatch' | 'attribute_mismatch';
+  appSpecLocation: string;
+  testSpecLocation: string;
+  appSpecValue: string;
+  testSpecValue: string;
+  resolution: string;
+}
+
+export interface CrossDocumentReport {
+  alignmentScore: number;           // 0.0 - 1.0
+  mismatches: CrossDocumentMismatch[];
+  coverageMatrix: {
+    appSpecBehaviors: number;
+    testedBehaviors: number;
+    coveragePercent: number;
+  };
+}
+
+export interface BuildSpecReviewOutput {
+  jobId: string;
+  jobType: 'build_spec_review';
+  refinedAppSpecSection: string;
+  refinedTestSpec: string;
+  crossDocumentReport: CrossDocumentReport;
+  changelog: ChangeEntry[];
+  debates?: {
+    chatgpt?: DebateSummary | DebateTranscript;
+    gemini?: DebateSummary | DebateTranscript;
+  };
+  stats: GauntletStats;
+  webhookSecret?: string;
+}
+
+export type PrdRefinementOutput = GauntletOutput;
+
+// Discriminated union for job outputs
+export type JobOutput = PrdRefinementOutput | BuildSpecReviewOutput;
+
+// ----------------------------------------------------------------------------
 // Tool Input/Output Types
 // ----------------------------------------------------------------------------
 
@@ -35,6 +120,7 @@ export interface GauntletInput {
 
 export interface GauntletOutput {
   jobId: string;
+  jobType?: JobType; // v4.0: discriminator field; defaults to 'prd_refinement' for legacy jobs
   finalPrd: string;
   changelog: ChangeEntry[];
   debates?: {
@@ -184,11 +270,15 @@ export type JobStatus =
 
 export interface JobState {
   jobId: string;
+  jobType: JobType;  // REQUIRED (v4.0), not optional
   status: JobStatus;
   currentRound?: number;
   currentModel?: CriticModel;
   createdAt: string;
   lastUpdate: string;
+  title?: string;
+  completedAt?: string;
+  consensusReached?: boolean;
   partialResult?: {
     currentPrd: string;
     changelogSoFar: ChangeEntry[];
@@ -197,7 +287,7 @@ export interface JobState {
     chatgpt?: DebateTranscript;
     gemini?: DebateTranscript;
   };
-  result?: GauntletOutput;
+  result?: GauntletOutput | BuildSpecReviewOutput;
   error?: GauntletError;
 }
 
@@ -399,16 +489,24 @@ export interface TranscriptError {
 
 export interface ListJobsInput {
   status?: JobStatus | 'all';
+  jobType?: JobType | 'all';
   limit?: number;
 }
 
 export interface JobSummary {
   jobId: string;
+  jobType: JobType;
   status: JobStatus;
+  title?: string;
   createdAt: string;
   lastUpdate: string;
+  completedAt?: string;
   currentRound?: number;
   currentModel?: CriticModel;
+  totalRounds?: number;
+  estimatedCost?: number;
+  consensusReached?: boolean;
+  savedToDisk?: boolean;
 }
 
 export interface ListJobsOutput {
@@ -429,6 +527,7 @@ export interface WebhookAuth {
 
 export interface WebhookPayload {
   jobId: string;
+  jobType: JobType;
   event: 'user_input_required';
   reason: 'undefined_term_stall' | 'consensus_conflict';
   details: {

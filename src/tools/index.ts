@@ -37,3 +37,9 @@ export {
   ListSavedJobsInputSchema,
   type ListSavedJobsInput,
 } from './listSavedJobs.js';
+
+export {
+  handleReviewBuildSpecs,
+  ReviewBuildSpecsInputSchema,
+  type ReviewBuildSpecsInput,
+} from './reviewBuildSpecs.js';

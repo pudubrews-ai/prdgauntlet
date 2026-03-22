@@ -65,7 +65,7 @@ export function handleCheckStatus(
       lastUpdate: job.lastUpdate,
       // Include finalPrd in partialResult for completed jobs (allows retrieval)
       partialResult: {
-        currentPrd: job.result.finalPrd,
+        currentPrd: (job.result as any).finalPrd ?? '',
         changelogSoFar: job.result.changelog,
       },
     };

@@ -1,16 +1,17 @@
 // ============================================================================
-// get_saved_prd Tool - Extract final PRD from saved job
+// get_saved_prd Tool - Extract final PRD or spec review output from saved job
 // ============================================================================
 
 import { z } from 'zod';
 import { promises as fs } from 'fs';
+import path from 'path';
 import type { GauntletConfig } from '../types/index.js';
-import { loadJobFromDisk } from '../utils/jobPersistence.js';
+import { loadJobFromDisk, getJobsDir } from '../utils/jobPersistence.js';
 import { logger } from '../utils/logger.js';
 
-// Input schema
+// Input schema - S-5: jobId must be UUID
 export const GetSavedPrdInputSchema = z.object({
-  jobId: z.string().min(1, 'Job ID is required'),
+  jobId: z.string().uuid('Job ID must be a valid UUID'),
   outputFile: z.string().optional(),
 });
 
@@ -18,7 +19,10 @@ export type GetSavedPrdInput = z.infer<typeof GetSavedPrdInputSchema>;
 
 export interface GetSavedPrdResult {
   jobId: string;
-  finalPrd: string;
+  jobType: string;
+  finalPrd?: string;
+  refinedAppSpecSection?: string;
+  refinedTestSpec?: string;
   savedToFile?: string;
   metadata?: {
     rounds: number;
@@ -48,6 +52,21 @@ export async function handleGetSavedPrd(
 
   const { jobId, outputFile } = parseResult.data;
 
+  // S-4: Sandbox outputFile to GAUNTLET_SAVE_DIR
+  if (outputFile) {
+    const allowedDir = path.resolve(getJobsDir());
+    const resolvedOutput = path.resolve(outputFile);
+    if (
+      !resolvedOutput.startsWith(allowedDir + path.sep) &&
+      resolvedOutput !== allowedDir
+    ) {
+      return {
+        error: 'INVALID_PATH',
+        message: 'outputFile must be within the gauntlet save directory.',
+      };
+    }
+  }
+
   // Load from disk
   try {
     const output = await loadJobFromDisk(jobId);
@@ -55,26 +74,44 @@ export async function handleGetSavedPrd(
     if (!output) {
       return {
         error: 'JOB_NOT_FOUND',
-        message: `Job ${jobId} not found on disk. It may not have been saved or was deleted.`,
+        message: 'Job not found on disk. It may not have been saved or was deleted.',
       };
     }
 
+    // F-7: Determine jobType and return appropriate fields
+    const jobType = (output as any).jobType || 'prd_refinement';
+
+    if (jobType === 'build_spec_review') {
+      const specOutput = output as any;
+      return {
+        jobId,
+        jobType: 'build_spec_review',
+        refinedAppSpecSection: specOutput.refinedAppSpecSection,
+        refinedTestSpec: specOutput.refinedTestSpec,
+        metadata: {
+          rounds: output.stats?.totalRounds ?? 0,
+          cost: output.stats?.estimatedCost ?? 0,
+          changeCount: output.changelog?.length ?? 0,
+        },
+      };
+    }
+
+    // Default: prd_refinement
     const finalPrd = output.finalPrd;
 
     // Save to file if requested
     if (outputFile) {
       try {
         await fs.writeFile(outputFile, finalPrd, 'utf-8');
-        logger.logInfo('PRD saved to file', { jobId, outputFile });
+        logger.logInfo('PRD saved to file', { jobId });
       } catch (error) {
         logger.logError('Failed to save PRD to file', {
           jobId,
-          outputFile,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
         return {
           error: 'FILE_WRITE_FAILED',
-          message: `Failed to write PRD to ${outputFile}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'Failed to write PRD to the specified file.',
         };
       }
     }
@@ -83,6 +120,7 @@ export async function handleGetSavedPrd(
 
     return {
       jobId,
+      jobType: 'prd_refinement',
       finalPrd,
       ...(outputFile && { savedToFile: outputFile }),
       metadata: {
@@ -99,7 +137,7 @@ export async function handleGetSavedPrd(
 
     return {
       error: 'LOAD_FAILED',
-      message: `Failed to load job: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      message: 'Failed to load the requested job.',
     };
   }
 }

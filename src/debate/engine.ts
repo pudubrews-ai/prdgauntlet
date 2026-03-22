@@ -53,6 +53,9 @@ export interface DebateConfig {
   transcriptSummaryOnly?: boolean; // v3.0: Return condensed 2-5KB summary instead of full transcript
   targetedSections?: string[]; // v3.0: Section paths for targeted re-debate
   useFullConsensus?: boolean; // v3.0: Use 5-threshold consensus validation
+  // v4.0: custom prompts for spec review mode (engine remains document-shape-agnostic)
+  customCriticPrompt?: string;
+  customDefenderPrompt?: string;
 }
 
 export interface DebateContext {
@@ -90,9 +93,9 @@ export async function runDebate(
   );
   const criticClient = createCriticClient(critic, gauntletConfig);
 
-  // Build prompts
-  const defenderPrompt = buildDefenderPrompt(gauntletConfig.prompts?.defender);
-  const criticPrompt = buildCriticPrompt(config.metadata);
+  // Build prompts (v4.0: use custom prompts for spec review mode when provided)
+  const defenderPrompt = config.customDefenderPrompt ?? buildDefenderPrompt(gauntletConfig.prompts?.defender);
+  const criticPrompt = config.customCriticPrompt ?? buildCriticPrompt(config.metadata);
 
   // State
   let currentPrd = prd;
@@ -113,6 +116,8 @@ export async function runDebate(
   changelog.setInitialPrd(prd);
 
   // Conversation history for each participant
+  // NOTE: These are trimmed to last 2 rounds to prevent per-request token overflow
+  // Full transcript is preserved in the 'messages' array for auditing
   const defenderHistory: LLMMessage[] = [];
   const criticHistory: LLMMessage[] = [];
 
@@ -165,6 +170,11 @@ export async function runDebate(
     }
 
     try {
+      // Trim critic history BEFORE sending to API to prevent token overflow
+      if (criticHistory.length > 5) {
+        criticHistory.splice(1, criticHistory.length - 5);
+      }
+
       // Step 1: Get critic feedback
       const criticResponse = await getCriticFeedback(
         criticClient,
@@ -264,6 +274,11 @@ export async function runDebate(
       // Step 2: Get defender response
       const defenderInput = formatDefenderRoundMessage(criticResponse.content);
       defenderHistory.push({ role: 'user', content: defenderInput });
+
+      // Trim defender history BEFORE sending to API
+      if (defenderHistory.length > 5) {
+        defenderHistory.splice(1, defenderHistory.length - 5);
+      }
 
       const defenderResponse = await getDefenderResponse(
         defender,

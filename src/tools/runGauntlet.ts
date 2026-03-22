@@ -133,10 +133,18 @@ export async function handleRunGauntlet(
     };
   }
 
+  // S-8: Validate maxRoundsPerModel >= 2
+  if (validInput.config?.maxRoundsPerModel !== undefined && validInput.config.maxRoundsPerModel < 2) {
+    return {
+      error: 'INVALID_INPUT',
+      message: 'maxRoundsPerModel must be at least 2. Consensus requires a minimum of 2 rounds.',
+    };
+  }
+
   // v3.0: Validate webhook URL if provided
   let webhookSecret: string | undefined;
   if (validInput.config?.webhookUrl) {
-    const webhookValidation = validateWebhookUrl(validInput.config.webhookUrl);
+    const webhookValidation = await validateWebhookUrl(validInput.config.webhookUrl);
     if (!webhookValidation.valid) {
       return {
         error: 'INVALID_INPUT',
@@ -154,10 +162,10 @@ export async function handleRunGauntlet(
   // Merge runtime config
   const config = mergeWithRuntimeConfig(baseConfig, validInput.config);
 
-  // Create job
+  // Create job with jobType: 'prd_refinement'
   let jobId: string;
   try {
-    jobId = jobStore.create();
+    jobId = jobStore.create('prd_refinement');
   } catch (error) {
     return {
       error: 'CONFIG_ERROR',
@@ -324,17 +332,17 @@ export async function handleRunGauntlet(
       if (config.fallbackPolicy.onModelUnavailable === 'error') {
         jobStore.fail(jobId, {
           error: 'PROVIDER_ERROR',
-          message: `ChatGPT debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'ChatGPT debate encountered an error. Check server logs for details.',
         });
         return {
           error: 'PROVIDER_ERROR',
-          message: `ChatGPT debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'ChatGPT debate encountered an error. Check server logs for details.',
         };
       }
 
       skippedCritics.push({
         model: 'chatgpt',
-        reason: error instanceof Error ? error.message : 'Unknown error',
+        reason: 'Provider error (see server logs)',
       });
     }
   }
@@ -384,17 +392,17 @@ export async function handleRunGauntlet(
       if (config.fallbackPolicy.onModelUnavailable === 'error') {
         jobStore.fail(jobId, {
           error: 'PROVIDER_ERROR',
-          message: `Gemini debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'Gemini debate encountered an error. Check server logs for details.',
         });
         return {
           error: 'PROVIDER_ERROR',
-          message: `Gemini debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'Gemini debate encountered an error. Check server logs for details.',
         };
       }
 
       skippedCritics.push({
         model: 'gemini',
-        reason: error instanceof Error ? error.message : 'Unknown error',
+        reason: 'Provider error (see server logs)',
       });
     }
   }
@@ -494,9 +502,11 @@ export async function handleRunGauntlet(
     outcome: hasIncompleteOutput ? 'incomplete_output' : stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
-  // Auto-save completed job to disk
+  // Auto-save completed job to disk (S-1: strip webhookSecret before saving)
   try {
-    await saveJobToDisk(jobId, output);
+    const outputForDisk = { ...output };
+    delete outputForDisk.webhookSecret;
+    await saveJobToDisk(jobId, outputForDisk);
     logger.logInfo('Job auto-saved to disk', { jobId });
   } catch (error) {
     logger.logWarn('Failed to auto-save job to disk', {

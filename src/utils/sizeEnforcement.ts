@@ -6,11 +6,43 @@ import { logger } from './logger.js';
 
 /**
  * Size limits (configurable via env)
+ * Hard maximum cap of 500KB for INPUT_SIZE_LIMIT_KB env var (CISO Finding 12)
  */
-export const INPUT_SIZE_LIMIT_KB =
-  parseInt(process.env.INPUT_SIZE_LIMIT_KB || '200', 10);
+const INPUT_SIZE_LIMIT_KB_RAW = parseInt(process.env.INPUT_SIZE_LIMIT_KB || '200', 10);
+export const INPUT_SIZE_LIMIT_KB = Math.min(INPUT_SIZE_LIMIT_KB_RAW, 500);
 export const OUTPUT_SIZE_LIMIT_KB =
   parseInt(process.env.OUTPUT_SIZE_LIMIT_KB || '75', 10);
+
+// Per-field size limits for spec review inputs (KB)
+export const SPEC_REVIEW_FIELD_LIMITS = {
+  appSpecSection: 100,
+  testSpec: 100,
+  buildRulesSpec: 50,
+  appSpec: 50,
+} as const;
+
+/**
+ * Check a single spec review field size
+ */
+export function checkSpecReviewFieldSize(
+  fieldName: keyof typeof SPEC_REVIEW_FIELD_LIMITS,
+  value: string
+): { ok: boolean; sizeKB: number; limitKB: number; error?: string } {
+  const sizeBytes = Buffer.byteLength(value, 'utf8');
+  const sizeKB = sizeBytes / 1024;
+  const limitKB = SPEC_REVIEW_FIELD_LIMITS[fieldName];
+
+  if (sizeKB > limitKB) {
+    return {
+      ok: false,
+      sizeKB,
+      limitKB,
+      error: `Field '${fieldName}' exceeds ${limitKB}KB limit (actual: ${sizeKB.toFixed(1)}KB).`,
+    };
+  }
+
+  return { ok: true, sizeKB, limitKB };
+}
 
 /**
  * Check PRD size against limits

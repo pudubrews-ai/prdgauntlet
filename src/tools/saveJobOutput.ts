@@ -69,7 +69,7 @@ export async function handleSaveJobOutput(
 
   // Save to disk
   try {
-    const filePath = await saveJobToDisk(jobId, job.result);
+    const filePath = await saveJobToDisk(jobId, job.result as any);
 
     logger.logInfo('Job manually saved to disk', { jobId, filePath });
 
