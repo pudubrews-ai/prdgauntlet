@@ -75,6 +75,7 @@ describe('D3: check_gauntlet_status includes jobType', () => {
     expect(result).not.toHaveProperty('error');
     expect(result).toHaveProperty('jobType', 'prd_refinement');
     expect(result).toHaveProperty('status', 'complete');
+    expect(result).toHaveProperty('refinedPrd');
   });
 
   it('includes jobType in error status', () => {

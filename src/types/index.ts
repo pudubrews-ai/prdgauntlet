@@ -120,9 +120,9 @@ export interface BuildSpecReviewOutput {
   summary: OutputSummary;
   /** @deprecated Use summary instead */
   stats?: GauntletStats;
-  webhookSecret?: string;
   status?: string;
   consensusReached?: boolean;
+  cdrFailures?: string[];
 }
 
 export type PrdRefinementOutput = GauntletOutput;
@@ -173,7 +173,6 @@ export interface GauntletOutput {
   stats: GauntletStats;
   summary?: OutputSummary; // v4.0: structured summary (preferred over stats)
   divergenceReport?: DivergenceReport & { escalationOptions: EscalationOptions }; // v3.0
-  webhookSecret?: string; // v3.0: HMAC secret for webhook verification
   status?: string;
   consensusReached?: boolean;
 }
@@ -500,6 +499,14 @@ export interface StatusOutput {
     currentPrd: string;
     changelogSoFar: ChangeEntry[];
   };
+  // Terminal status result fields (complete / consensus_failed)
+  refinedPrd?: string;
+  refinedAppSpecSection?: string;
+  refinedTestSpec?: string;
+  summary?: OutputSummary;
+  crossDocumentReport?: CrossDocumentReport;
+  divergenceReport?: DivergenceReport;
+  cdrFailureReasons?: string[];
 }
 
 export interface StatusError {

@@ -7,30 +7,30 @@ describe('handleGetTranscript', () => {
     jobStore.clear();
   });
 
-  it('returns JOB_NOT_FOUND for non-existent job', () => {
-    const result = handleGetTranscript({
+  it('returns JOB_NOT_FOUND for non-existent job', async () => {
+    const result = await handleGetTranscript({
       jobId: '00000000-0000-0000-0000-000000000000',
       model: 'chatgpt',
     });
     expect(result).toHaveProperty('error', 'JOB_NOT_FOUND');
   });
 
-  it('returns JOB_NOT_FOUND for invalid UUID format', () => {
-    const result = handleGetTranscript({
+  it('returns JOB_NOT_FOUND for invalid UUID format', async () => {
+    const result = await handleGetTranscript({
       jobId: 'not-a-uuid',
       model: 'chatgpt',
     });
     expect(result).toHaveProperty('error', 'JOB_NOT_FOUND');
   });
 
-  it('returns TRANSCRIPT_UNAVAILABLE when no transcript stored', () => {
+  it('returns TRANSCRIPT_UNAVAILABLE when no transcript stored', async () => {
     const jobId = jobStore.create();
-    const result = handleGetTranscript({ jobId, model: 'chatgpt' });
+    const result = await handleGetTranscript({ jobId, model: 'chatgpt' });
 
     expect(result).toHaveProperty('error', 'TRANSCRIPT_UNAVAILABLE');
   });
 
-  it('returns transcript when available', () => {
+  it('returns transcript when available', async () => {
     const jobId = jobStore.create();
     const transcript = {
       summary: {
@@ -53,7 +53,7 @@ describe('handleGetTranscript', () => {
     };
 
     jobStore.storeTranscript(jobId, 'chatgpt', transcript);
-    const result = handleGetTranscript({ jobId, model: 'chatgpt' });
+    const result = await handleGetTranscript({ jobId, model: 'chatgpt' });
 
     expect(result).not.toHaveProperty('error');
     expect(result).toHaveProperty('transcript');
@@ -61,7 +61,7 @@ describe('handleGetTranscript', () => {
     expect((result as any).transcript.messages).toHaveLength(2);
   });
 
-  it('returns CRITIC_SKIPPED when critic was skipped', () => {
+  it('returns CRITIC_SKIPPED when critic was skipped', async () => {
     const jobId = jobStore.create();
     jobStore.complete(jobId, {
       jobId,
@@ -75,13 +75,13 @@ describe('handleGetTranscript', () => {
       },
     });
 
-    const result = handleGetTranscript({ jobId, model: 'gemini' });
+    const result = await handleGetTranscript({ jobId, model: 'gemini' });
 
     expect(result).toHaveProperty('error', 'CRITIC_SKIPPED');
     expect((result as any).message).toContain('Provider unavailable');
   });
 
-  it('retrieves correct transcript for specific model', () => {
+  it('retrieves correct transcript for specific model', async () => {
     const jobId = jobStore.create();
 
     const chatgptTranscript = {
@@ -97,8 +97,8 @@ describe('handleGetTranscript', () => {
     jobStore.storeTranscript(jobId, 'chatgpt', chatgptTranscript);
     jobStore.storeTranscript(jobId, 'gemini', geminiTranscript);
 
-    const chatgptResult = handleGetTranscript({ jobId, model: 'chatgpt' });
-    const geminiResult = handleGetTranscript({ jobId, model: 'gemini' });
+    const chatgptResult = await handleGetTranscript({ jobId, model: 'chatgpt' });
+    const geminiResult = await handleGetTranscript({ jobId, model: 'gemini' });
 
     expect((chatgptResult as any).transcript.summary.keyChanges[0]).toBe('ChatGPT change');
     expect((geminiResult as any).transcript.summary.keyChanges[0]).toBe('Gemini change');

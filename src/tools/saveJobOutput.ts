@@ -10,7 +10,7 @@ import { logger } from '../utils/logger.js';
 
 // Input schema
 export const SaveJobOutputInputSchema = z.object({
-  jobId: z.string().min(1, 'Job ID is required'),
+  jobId: z.string().uuid('Job ID must be a valid UUID'),
 });
 
 export type SaveJobOutputInput = z.infer<typeof SaveJobOutputInputSchema>;

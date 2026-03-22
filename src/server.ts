@@ -250,7 +250,7 @@ export function createServer(config: GauntletConfig): McpServer {
     async (params) => {
       logger.logDebug('get_debate_transcript called', { jobId: params.jobId, model: params.model });
 
-      const result = handleGetTranscript(params);
+      const result = await handleGetTranscript(params);
 
       if ('error' in result) {
         return {

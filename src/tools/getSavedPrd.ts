@@ -20,7 +20,7 @@ export type GetSavedPrdInput = z.infer<typeof GetSavedPrdInputSchema>;
 export interface GetSavedPrdResult {
   jobId: string;
   jobType: string;
-  finalPrd?: string;
+  refinedPrd?: string;
   refinedAppSpecSection?: string;
   refinedTestSpec?: string;
   savedToFile?: string;
@@ -121,12 +121,12 @@ export async function handleGetSavedPrd(
     return {
       jobId,
       jobType: 'prd_refinement',
-      finalPrd,
+      refinedPrd: finalPrd,
       ...(outputFile && { savedToFile: outputFile }),
       metadata: {
-        rounds: output.stats.totalRounds,
-        cost: output.stats.estimatedCost,
-        changeCount: output.changelog.length,
+        rounds: output.stats?.totalRounds ?? output.summary?.totalRounds ?? 0,
+        cost: output.stats?.estimatedCost ?? output.summary?.estimatedCost ?? 0,
+        changeCount: output.changelog?.length ?? 0,
       },
     };
   } catch (error) {

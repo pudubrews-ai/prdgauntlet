@@ -110,6 +110,22 @@ export async function loadJobFromDisk(
       output.jobType = 'prd_refinement';
     }
 
+    // D11: Normalize legacy `stats` field to canonical `summary` shape
+    const outputAny = output as any;
+    if (!outputAny.summary && outputAny.stats) {
+      const s = outputAny.stats;
+      outputAny.summary = {
+        totalRounds: s.totalRounds ?? 0,
+        chatgptRounds: 0,
+        geminiRounds: 0,
+        consensusReached: outputAny.consensusReached ?? false,
+        totalTokens: s.tokensUsed
+          ? ((s.tokensUsed.claude ?? 0) + (s.tokensUsed.chatgpt ?? 0) + (s.tokensUsed.gemini ?? 0))
+          : 0,
+        estimatedCost: s.estimatedCost ?? 0,
+      };
+    }
+
     logger.logDebug('Job loaded from disk', { jobId });
     return output;
   } catch (error) {

@@ -225,7 +225,6 @@ export async function handleReviewBuildSpecs(
         delimiters,
         config,
         baseConfig,
-        webhookSecret,
         maxRoundsPerModel,
       });
     } catch (error) {
@@ -319,7 +318,6 @@ interface SpecReviewDebateParams {
   delimiters: ReturnType<typeof generateDelimiters>;
   config: GauntletConfig;
   baseConfig: GauntletConfig;
-  webhookSecret?: string;
   maxRoundsPerModel: number;
 }
 
@@ -550,6 +548,8 @@ async function runSpecReviewDebate({
     // D4: persist status and consensusReached for disk retrieval
     status: finalStatus,
     consensusReached,
+    // D8: persist CDR failures so check_gauntlet_status can surface them
+    ...(cdrGateFailed && { cdrFailures }),
   };
 
   jobStore.complete(jobId, output, finalStatus);
