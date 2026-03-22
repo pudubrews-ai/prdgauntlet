@@ -312,7 +312,9 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
     chatgpt?: DebateSummary;
     gemini?: DebateSummary;
   } = {};
-  let stoppedEarly: GauntletOutput['stats']['stoppedEarly'];
+  // Bug 1: Split stoppedEarly into resourceCapExhausted (global resource caps only).
+  // ChatGPT early_stop due to protocol/error does NOT gate Gemini — only cost/token caps do.
+  let resourceCapExhausted: { reason: 'cost_cap' | 'token_cap'; details: string } | null = null;
 
   // Run ChatGPT debate
   if (chatgptAvailable) {
@@ -349,17 +351,15 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
         changelog.getChangelog()
       );
 
-      // Check for early stop
+      // Bug 1: Only set resourceCapExhausted for global resource caps (cost/token).
+      // Protocol violations, timeouts, and other early_stop reasons do NOT gate Gemini.
       if (result.outcome === 'early_stop') {
-        stoppedEarly = {
-          reason: costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)
-            ? 'cost_cap'
-            : costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)
-              ? 'token_cap'
-              : 'timeout',
-          atModel: 'chatgpt',
-          unresolvedConcerns: result.unresolvedConcerns,
-        };
+        if (costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)) {
+          resourceCapExhausted = { reason: 'cost_cap', details: result.unresolvedConcerns.join('; ') };
+        } else if (costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)) {
+          resourceCapExhausted = { reason: 'token_cap', details: result.unresolvedConcerns.join('; ') };
+        }
+        // Per-critic outcome is already tracked in debates.chatgpt.outcome
       }
     } catch (error) {
       logger.logProviderError(jobId, 'chatgpt', error instanceof Error ? error.message : 'Unknown error');
@@ -379,8 +379,8 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
     }
   }
 
-  // Run Gemini debate (if not stopped early and available)
-  if (geminiAvailable && !stoppedEarly) {
+  // Run Gemini debate (if resource caps not exhausted and available)
+  if (geminiAvailable && !resourceCapExhausted) {
     try {
       jobStore.updateStatus(jobId, 'debating_gemini');
 
@@ -406,17 +406,13 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
       // Store summary
       debates.gemini = result.transcript.summary;
 
-      // Check for early stop
+      // Bug 1: Same pattern — only resource caps propagate to resourceCapExhausted
       if (result.outcome === 'early_stop') {
-        stoppedEarly = {
-          reason: costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)
-            ? 'cost_cap'
-            : costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)
-              ? 'token_cap'
-              : 'timeout',
-          atModel: 'gemini',
-          unresolvedConcerns: result.unresolvedConcerns,
-        };
+        if (costTracker.hasExceededCostCap(config.maxEstimatedCost || Infinity)) {
+          resourceCapExhausted = { reason: 'cost_cap', details: result.unresolvedConcerns.join('; ') };
+        } else if (costTracker.hasExceededTokenCap(config.maxTotalTokens || Infinity)) {
+          resourceCapExhausted = { reason: 'token_cap', details: result.unresolvedConcerns.join('; ') };
+        }
       }
     } catch (error) {
       logger.logProviderError(jobId, 'gemini', error instanceof Error ? error.message : 'Unknown error');
@@ -440,7 +436,16 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
   const allDebatesReached = Object.values(debates).every(
     (d) => d && d.outcome === 'consensus'
   );
-  const consensusFailed = !allDebatesReached && !stoppedEarly;
+  // Bug 1: Use resourceCapExhausted (not the old stoppedEarly boolean) to gate consensus_failed
+  const consensusFailed = !allDebatesReached && !resourceCapExhausted;
+
+  // Bug 1b (S10): If BOTH critics ran but both failed (early_stop/error), status → error
+  const allCriticsFailed = Object.keys(debates).length > 0 && Object.values(debates).every(
+    (d) => d && (d.outcome === 'early_stop' || (d.outcome as string) === 'error')
+  );
+  if (allCriticsFailed && skippedCritics.length === 0) {
+    logger.logError('All critics failed — marking job as error', { jobId });
+  }
 
   // v4.0: Check if any debate produced incomplete output
   const hasIncompleteOutput = Object.values(debates).some(
@@ -468,6 +473,23 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
       : {}),
   };
 
+  // Bug 1d: Cost starvation visibility — add note if Gemini was limited due to resource cap
+  if (resourceCapExhausted && debates.gemini && (debates.gemini as DebateSummary).rounds <= 1) {
+    (summary as any).notes = (summary as any).notes || [];
+    (summary as any).notes.push(
+      `Gemini review was limited to ${(debates.gemini as DebateSummary).rounds} round(s) due to ${resourceCapExhausted.reason}. Consider increasing the budget for full dual-critic coverage.`
+    );
+  }
+
+  // Build stoppedEarly stats field (legacy shape) if resource caps triggered
+  const stoppedEarlyStats = resourceCapExhausted
+    ? {
+        reason: resourceCapExhausted.reason,
+        atModel: (debates.gemini ? 'gemini' : 'chatgpt') as 'chatgpt' | 'gemini',
+        unresolvedConcerns: [resourceCapExhausted.details],
+      }
+    : undefined;
+
   // D6: Build output WITHOUT webhookSecret
   const output: GauntletOutput = {
     jobId,
@@ -477,7 +499,7 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
       totalRounds,
       tokensUsed: tokenCounts,
       estimatedCost: costTracker.getEstimatedCostRounded(),
-      ...(stoppedEarly && { stoppedEarly }),
+      ...(stoppedEarlyStats && { stoppedEarly: stoppedEarlyStats }),
       ...(skippedCritics.length > 0 && { skippedCritics }),
     },
     summary,
@@ -531,7 +553,10 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
 
   // v4.0: Determine final job status based on outcomes
   let finalStatus: JobStatus = 'complete';
-  if (hasIncompleteOutput) {
+  if (allCriticsFailed && skippedCritics.length === 0) {
+    // Bug 1b (S10): Both critics ran but both failed → error (not consensus_failed)
+    finalStatus = 'error';
+  } else if (hasIncompleteOutput) {
     finalStatus = 'incomplete_output';
   } else if (consensusFailed) {
     finalStatus = 'consensus_failed';
@@ -547,7 +572,7 @@ async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDeb
   logger.logJobCompleted(jobId, {
     rounds: totalRounds,
     cost: costTracker.getEstimatedCostRounded(),
-    outcome: hasIncompleteOutput ? 'incomplete_output' : stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
+    outcome: hasIncompleteOutput ? 'incomplete_output' : resourceCapExhausted ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
   // Auto-save completed job to disk (D6: webhookSecret was never placed on output object)

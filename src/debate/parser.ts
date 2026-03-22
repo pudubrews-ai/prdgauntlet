@@ -55,6 +55,33 @@ export function parseDefenderResponse(response: string): ParsedDefenderResponse 
   };
 }
 
+/**
+ * Bug 3 (S6): Strip JSON code blocks ONLY within a "## Changes This Round" section.
+ * Uses section-header anchoring — never content-shape heuristics.
+ * Preserves ALL code blocks outside that section (e.g., API response shape examples).
+ *
+ * Also handles ### Changes This Round (h3 variant).
+ */
+function stripRoundDeltaBlocks(content: string): string {
+  // Match: ## Changes This Round ... (up to next ##-level header, or end of string)
+  const sectionPattern = /(##[#]?\s*Changes\s+This\s+Round[\s\S]*?)(?=\n##[^#]|\n$|$)/i;
+  const match = content.match(sectionPattern);
+  if (!match || match.index === undefined) return content; // No section found — preserve everything
+
+  const sectionStart = match.index;
+  const sectionEnd = sectionStart + match[0].length;
+  const before = content.slice(0, sectionStart);
+  const section = content.slice(sectionStart, sectionEnd);
+  const after = content.slice(sectionEnd);
+
+  // Strip json code blocks only within the matched section
+  const cleaned = section.replace(/```json[\s\S]*?```/g, '');
+  // Strip the heading itself if the section is now empty
+  const trimmedSection = cleaned.replace(/##[#]?\s*Changes\s+This\s+Round\s*/i, '').trim();
+
+  return (before + (trimmedSection ? '\n' + trimmedSection + '\n' : '') + after).trim();
+}
+
 function extractUpdatedPrd(content: string): string | null {
   // Look for ## Updated PRD section
   // Note: The PRD content may contain its own ## headers, so we need to look for
@@ -68,12 +95,13 @@ function extractUpdatedPrd(content: string): string | null {
   // Fallback: if no explicit section, but content looks like a PRD, return it
   // This handles cases where the defender might format differently
   if (content.includes('# ') && content.length > 500) {
-    // Likely contains markdown headers, could be a PRD
-    const jsonBlockPattern = /```json[\s\S]*?```/g;
-    const withoutJson = content.replace(jsonBlockPattern, '').trim();
+    // Bug 3 (S6): Only strip JSON code blocks that appear within a
+    // "## Changes This Round" section — NOT blocks elsewhere in the document
+    // (e.g., API response shape examples with "type"/"summary" keys).
+    const withoutRoundDelta = stripRoundDeltaBlocks(content);
 
-    // Remove any "Changes This Round" or "Question for Critic" sections
-    const cleaned = withoutJson
+    // Remove any remaining "Changes This Round" or "Question for Critic" sections
+    const cleaned = withoutRoundDelta
       .replace(/## Changes This Round[\s\S]*?(?=\n## |$)/g, '')
       .replace(/## Question for Critic[\s\S]*/g, '')
       .trim();

@@ -5,6 +5,164 @@
 import type { CrossDocumentReport, CrossDocumentMismatch } from '../types/index.js';
 
 /**
+ * Escape a string for safe use in a RegExp (S1: no raw new RegExp() on user content).
+ */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Recognized template placeholders (S2/S5: allowlist only — no catch-all).
+ */
+const PLACEHOLDER_PATTERN = /\{(?:n|N|id|index|i|[0-9])\}/g;
+
+/**
+ * Check whether one value is a template and the other is a concrete instance of it.
+ * Security requirements:
+ *   S1: escapeRegExp() applied to all non-placeholder segments.
+ *   S2: Only allowlisted placeholders treated as wildcards ([^-]+ per segment).
+ *   S3: Cap at 3 placeholders per value to prevent regex complexity explosion.
+ *   S4: Skip template matching if value is longer than 100 characters.
+ */
+export function isTemplateMatch(a: string, b: string): boolean {
+  // Security: skip if either value is too long (S4)
+  if (a.length > 100 || b.length > 100) return false;
+
+  // Identify which (if any) is the template
+  const aPlaceholders = (a.match(PLACEHOLDER_PATTERN) || []).length;
+  const bPlaceholders = (b.match(PLACEHOLDER_PATTERN) || []).length;
+
+  const templateStr = aPlaceholders > 0 ? a : bPlaceholders > 0 ? b : null;
+  const concreteStr = templateStr === a ? b : a;
+
+  if (!templateStr) return false;
+
+  // Security: cap at 3 placeholders (S3)
+  const placeholderCount = (templateStr.match(PLACEHOLDER_PATTERN) || []).length;
+  if (placeholderCount > 3) return false;
+
+  // Build regex: split on recognized placeholders, escape literal segments, rejoin
+  // Replace each placeholder with [^-]+ (single hyphen-delimited segment) (S2)
+  const parts = templateStr.split(PLACEHOLDER_PATTERN);
+  const escapedParts = parts.map(escapeRegExp);
+  const regexSource = '^' + escapedParts.join('[^-]+') + '$';
+
+  try {
+    const regex = new RegExp(regexSource);
+    return regex.test(concreteStr);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pair testids from app spec and test spec using content-level strategies.
+ * Bug 4: Replaces aggressive includes() substring matching with semantic pairing.
+ *
+ * Strategies (in order):
+ * 1. Backtick extraction near "testid"/"test-id"/"data-testid" keywords
+ * 2. Markdown table columns with "testid" or "test id" header
+ * 3. getByTestId('...') call extraction
+ * 4. Unpaired fallback: only flag when same hyphenated prefix, last segment differs
+ *
+ * Returns an array of {appValue, testValue} pairs that are candidates for mismatch.
+ */
+function pairTestIds(
+  appTestIds: string[],
+  testSpecTestIds: string[],
+  testSpecRaw: string
+): Array<{ appValue: string; testValue: string }> {
+  const pairs: Array<{ appValue: string; testValue: string }> = [];
+  const pairedApp = new Set<string>();
+  const pairedTest = new Set<string>();
+
+  // Strategy 1: backtick extraction near testid keywords
+  const backtickPattern = /`([^`]+)`/g;
+  const testSpecLines = testSpecRaw.split('\n');
+  const backtickTestIds = new Set<string>();
+  for (const line of testSpecLines) {
+    const lower = line.toLowerCase();
+    if (lower.includes('testid') || lower.includes('test-id') || lower.includes('data-testid')) {
+      const matches = [...line.matchAll(backtickPattern)];
+      for (const m of matches) {
+        backtickTestIds.add(m[1]);
+      }
+    }
+  }
+
+  // Strategy 2: markdown table column with testid/test id header
+  const tableTestIds = new Set<string>();
+  let inTestIdColumn = false;
+  let testIdColumnIdx = -1;
+  for (const line of testSpecLines) {
+    if (line.trim().startsWith('|')) {
+      const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+      // Check if this is a header row
+      if (testIdColumnIdx === -1) {
+        testIdColumnIdx = cells.findIndex(c => c.toLowerCase().includes('testid') || c.toLowerCase().includes('test id'));
+        if (testIdColumnIdx !== -1) inTestIdColumn = true;
+      } else if (inTestIdColumn && testIdColumnIdx < cells.length) {
+        const cell = cells[testIdColumnIdx];
+        // Skip separator rows (---|---)
+        if (!/^-+$/.test(cell) && cell.length > 0) {
+          tableTestIds.add(cell);
+        }
+      }
+    } else {
+      // Reset on non-table line
+      inTestIdColumn = false;
+      testIdColumnIdx = -1;
+    }
+  }
+
+  // Strategy 3: getByTestId('...') or getByTestId("...") extraction
+  const getByTestIdPattern = /getByTestId\(["']([^"']+)["']\)/g;
+  const getByTestIds = new Set<string>();
+  for (const m of testSpecRaw.matchAll(getByTestIdPattern)) {
+    getByTestIds.add(m[1]);
+  }
+
+  // Combine all extracted test-spec testids
+  const extractedTestIds = new Set([...backtickTestIds, ...tableTestIds, ...getByTestIds]);
+
+  // Pair by exact match with app spec testids
+  for (const appId of appTestIds) {
+    if (extractedTestIds.has(appId)) {
+      // Exact match — no mismatch
+      pairedApp.add(appId);
+      pairedTest.add(appId);
+    }
+  }
+
+  // Strategy 4: Unpaired fallback
+  // Only flag when same hyphenated prefix (up to last segment) AND last segment differs
+  for (const appId of appTestIds) {
+    if (pairedApp.has(appId)) continue;
+    for (const testId of testSpecTestIds) {
+      if (pairedTest.has(testId)) continue;
+      if (appId === testId) continue;
+
+      const appParts = appId.split('-');
+      const testParts = testId.split('-');
+
+      // Must have same depth AND same prefix (all segments except last)
+      if (appParts.length !== testParts.length || appParts.length < 2) continue;
+
+      const appPrefix = appParts.slice(0, -1).join('-');
+      const testPrefix = testParts.slice(0, -1).join('-');
+
+      if (appPrefix === testPrefix && appParts[appParts.length - 1] !== testParts[testParts.length - 1]) {
+        pairs.push({ appValue: appId, testValue: testId });
+        pairedApp.add(appId);
+        pairedTest.add(testId);
+      }
+    }
+  }
+
+  return pairs;
+}
+
+/**
  * Normalize a string for comparison: trim, collapse whitespace, strip surrounding quotes.
  */
 function normalize(s: string): string {
@@ -140,6 +298,8 @@ function extractStrings(doc: string, docLabel: string): Array<{ value: string; l
 
 /**
  * Detect string and attribute mismatches between app spec and test spec.
+ * Bug 4: Uses semantic pairTestIds() instead of aggressive includes() substring matching.
+ * Bug 5: Applies isTemplateMatch() to skip template-vs-instance false positives.
  */
 export function detectMismatches(
   appSpec: string,
@@ -161,46 +321,70 @@ export function detectMismatches(
     testMap.set(value, location);
   }
 
-  // Check for values in test spec that are similar but not identical to app spec values
+  // -------------------------------------------------------------------------
+  // Attribute mismatch detection (Bug 4: replace includes() with pairTestIds)
+  // -------------------------------------------------------------------------
+
+  // Collect testid values from each doc (strip prefix)
+  const appTestIds: string[] = [];
+  const testTestIds: string[] = [];
+  for (const [value] of appMap) {
+    if (value.startsWith('data-testid:')) {
+      appTestIds.push(value.split(':').slice(1).join(':'));
+    }
+  }
+  for (const [value] of testMap) {
+    if (value.startsWith('data-testid:')) {
+      testTestIds.push(value.split(':').slice(1).join(':'));
+    }
+  }
+
+  // Get semantically paired testid mismatches
+  const testIdPairs = pairTestIds(appTestIds, testTestIds, testSpec);
+
+  for (const { appValue, testValue } of testIdPairs) {
+    // Bug 5: skip template-vs-instance pairs
+    if (isTemplateMatch(appValue, testValue)) continue;
+
+    // Find locations
+    const appLoc = appMap.get(`data-testid:${appValue}`) ?? `app-spec:unknown`;
+    const testLoc = testMap.get(`data-testid:${testValue}`) ?? `test-spec:unknown`;
+
+    mismatches.push({
+      type: 'attribute_mismatch',
+      appSpecLocation: appLoc,
+      testSpecLocation: testLoc,
+      appSpecValue: appValue,
+      testSpecValue: testValue,
+      resolution: 'unresolved',
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // String mismatch detection (Bug 5: apply isTemplateMatch before flagging)
+  // -------------------------------------------------------------------------
+
   for (const [testValue, testLocation] of testMap) {
-    // Skip attribute-prefixed values for string mismatch detection
     const isAttribute = testValue.startsWith('data-testid:') || testValue.startsWith('aria-label:');
+    if (isAttribute) continue; // Handled above
+
+    const testNorm = testValue.toLowerCase();
 
     for (const [appValue, appLocation] of appMap) {
       if (testValue === appValue) continue; // Exact match, no mismatch
+      const appIsAttribute = appValue.startsWith('data-testid:') || appValue.startsWith('aria-label:');
+      if (appIsAttribute) continue;
 
-      // Check for similar but not identical values (potential mismatch)
-      const testNorm = testValue.toLowerCase();
       const appNorm = appValue.toLowerCase();
 
-      // Detect attribute mismatches
-      if (isAttribute && testValue.split(':')[0] === appValue.split(':')[0]) {
-        const testAttrValue = testValue.split(':').slice(1).join(':');
-        const appAttrValue = appValue.split(':').slice(1).join(':');
-
-        if (
-          testAttrValue !== appAttrValue &&
-          (testAttrValue.includes(appAttrValue) || appAttrValue.includes(testAttrValue))
-        ) {
-          mismatches.push({
-            type: 'attribute_mismatch',
-            appSpecLocation: appLocation,
-            testSpecLocation: testLocation,
-            appSpecValue: appAttrValue,
-            testSpecValue: testAttrValue,
-            resolution: 'unresolved',
-          });
-        }
-        continue;
-      }
-
-      // Detect string mismatches (similar strings with small differences)
       if (
-        !isAttribute &&
         testNorm.length > 10 &&
         appNorm.length > 10 &&
         testNorm !== appNorm
       ) {
+        // Bug 5: skip template-vs-instance pairs
+        if (isTemplateMatch(appValue, testValue)) continue;
+
         // Check if one contains a substantial prefix of the other (likely a mismatch)
         const shorter = testNorm.length < appNorm.length ? testNorm : appNorm;
         const longer = testNorm.length < appNorm.length ? appNorm : testNorm;

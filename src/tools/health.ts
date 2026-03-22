@@ -19,7 +19,7 @@ export const HealthInputSchema = z.object({
 export type HealthInput = z.infer<typeof HealthInputSchema>;
 
 const SERVER_START_TIME = Date.now();
-const VERSION = '3.0.0'; // v3.0: Enhanced consensus, loop detection, size enforcement
+const VERSION = '4.0.1'; // v4.0.1: Build spec review, cross-document validation, bug fixes
 
 export async function handleHealth(
   input: unknown,
