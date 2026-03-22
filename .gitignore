@@ -27,3 +27,4 @@ coverage/
 
 # Config (user-specific)
 gauntlet.config.json
+reports/
