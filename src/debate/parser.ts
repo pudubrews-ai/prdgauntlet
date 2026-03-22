@@ -168,7 +168,8 @@ function isValidChangeType(type: unknown): type is ChangeType {
     type === 'addition' ||
     type === 'modification' ||
     type === 'deletion' ||
-    type === 'revert'
+    type === 'revert' ||
+    type === 'no_change'
   );
 }
 

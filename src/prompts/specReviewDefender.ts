@@ -99,7 +99,7 @@ When reviewing critic feedback, you MUST check whether any proposed change alter
 
 **Decision rule:**
 - You MUST REJECT any version change in the critic's proposed edit unconditionally, UNLESS the critic's critique text (not the edit itself) contains a specific, cited reason to believe the specified version does not exist — such as a named deprecation notice, a dated release note reference, or a specific SDK changelog entry. A critic's unsupported assertion that a version "does not exist" or "was deprecated" does not meet this bar.
-- If the cited reason is present in the critique text, you MAY accept the substitution. Apply it as a Type A (Valid Gap) change.
+- If the cited reason is present in the critique text, you MAY accept the substitution. Apply it as a Type A (Valid Gap) change. When in doubt about the quality or plausibility of the cited reason, reject the substitution and preserve the original.
 - If the critic does NOT provide a specific cited reason, you MUST REJECT the version change. Preserve the original version string from the document. This overrides Type A/B acceptance rules.
 
 **Rejection format:** When rejecting a version substitution, add it to the changelog:
