@@ -11,6 +11,11 @@ import { handleCheckStatus } from './tools/checkStatus.js';
 import { handleGetTranscript } from './tools/getTranscript.js';
 import { handleListJobs } from './tools/listJobs.js';
 import { handleClearCache } from './tools/clearCache.js';
+import { handleSaveJobOutput } from './tools/saveJobOutput.js';
+import { handleLoadSavedJob } from './tools/loadSavedJob.js';
+import { handleGetSavedPrd } from './tools/getSavedPrd.js';
+import { handleListSavedJobs } from './tools/listSavedJobs.js';
+import { handleReviewBuildSpecs } from './tools/reviewBuildSpecs.js';
 import { logger } from './utils/logger.js';
 
 // Define Zod schemas for MCP tool registration
@@ -103,9 +108,23 @@ const GetTranscriptParamsSchema = {
 
 const ListJobsParamsSchema = {
   status: z
-    .enum(['idle', 'debating_chatgpt', 'debating_gemini', 'complete', 'error', 'all'])
+    .enum([
+      'idle',
+      'debating_chatgpt',
+      'debating_gemini',
+      'awaiting_user_input',
+      'complete',
+      'error',
+      'consensus_failed',
+      'incomplete_output',
+      'all',
+    ])
     .optional()
     .describe('Filter by job status (default: all)'),
+  jobType: z
+    .enum(['prd_refinement', 'build_spec_review', 'all'])
+    .optional()
+    .describe('v4.0: Filter by job type (default: all)'),
   limit: z
     .number()
     .positive()
@@ -114,10 +133,25 @@ const ListJobsParamsSchema = {
     .describe('Maximum number of jobs to return (default: 50, max: 100)'),
 };
 
+const SaveJobOutputParamsSchema = {
+  jobId: z.string().uuid().describe('The job ID to save to disk'),
+};
+
+const LoadSavedJobParamsSchema = {
+  jobId: z.string().uuid().describe('The saved job ID to load from disk'),
+};
+
+const GetSavedPrdParamsSchema = {
+  jobId: z.string().uuid().describe('The saved job ID to extract PRD from'),
+  outputFile: z.string().optional().describe('Optional file path to save PRD markdown'),
+};
+
+const ListSavedJobsParamsSchema = {};
+
 export function createServer(config: GauntletConfig): McpServer {
   const server = new McpServer({
     name: 'prd-gauntlet',
-    version: '3.0.0', // Updated to v3.0 with enhanced features
+    version: '4.0.0', // Updated to v4.0 with build spec review mode
   });
 
   // Register run_prd_gauntlet tool
@@ -216,7 +250,7 @@ export function createServer(config: GauntletConfig): McpServer {
     async (params) => {
       logger.logDebug('get_debate_transcript called', { jobId: params.jobId, model: params.model });
 
-      const result = handleGetTranscript(params);
+      const result = await handleGetTranscript(params);
 
       if ('error' in result) {
         return {
@@ -244,12 +278,12 @@ export function createServer(config: GauntletConfig): McpServer {
   // Register list_gauntlet_jobs tool
   server.tool(
     'list_gauntlet_jobs',
-    'List running and completed gauntlet jobs. Use this to recover job IDs after client timeout.',
+    'v4.0: List running and completed gauntlet jobs. Supports filtering by status and jobType (prd_refinement, build_spec_review). Use this to recover job IDs after client timeout.',
     ListJobsParamsSchema,
     async (params) => {
       logger.logDebug('list_gauntlet_jobs called', { status: params.status, limit: params.limit });
 
-      const result = handleListJobs(params);
+      const result = await handleListJobs(params as any);
 
       return {
         content: [
@@ -283,7 +317,206 @@ export function createServer(config: GauntletConfig): McpServer {
     }
   );
 
-  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs, clear_terminology_cache');
+  // Register save_job_output tool
+  server.tool(
+    'save_job_output',
+    'Manually save a completed gauntlet job to disk for later retrieval. Jobs are auto-saved on completion, but this can be used for ephemeral jobs.',
+    SaveJobOutputParamsSchema,
+    async (params) => {
+      logger.logDebug('save_job_output called', { jobId: params.jobId });
+
+      const result = await handleSaveJobOutput(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register load_saved_job tool
+  server.tool(
+    'load_saved_job',
+    'Load a complete gauntlet job output from disk. Returns full output including PRD, changelog, debates, and stats without truncation.',
+    LoadSavedJobParamsSchema,
+    async (params) => {
+      logger.logDebug('load_saved_job called', { jobId: params.jobId });
+
+      const result = await handleLoadSavedJob(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register get_saved_prd tool
+  server.tool(
+    'get_saved_prd',
+    'v4.0: Extract the final output from a saved job. For PRD refinement jobs, returns refinedPrd. For build spec review jobs, returns refinedAppSpecSection and refinedTestSpec. Dual-mode support.',
+    GetSavedPrdParamsSchema,
+    async (params) => {
+      logger.logDebug('get_saved_prd called', { jobId: params.jobId, outputFile: params.outputFile });
+
+      const result = await handleGetSavedPrd(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register list_saved_jobs tool
+  server.tool(
+    'list_saved_jobs',
+    'List all saved gauntlet jobs on disk with metadata. Shows job ID, save date, title, rounds, and cost.',
+    ListSavedJobsParamsSchema,
+    async () => {
+      logger.logDebug('list_saved_jobs called');
+
+      const result = await handleListSavedJobs({}, config);
+
+      if ('error' in result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Register review_build_specs tool (v4.0)
+  server.tool(
+    'review_build_specs',
+    'v4.0: Review an app spec section and test spec through multi-model AI debate. Claude defends both documents against critiques from ChatGPT and Gemini. Returns refined documents with cross-document alignment analysis. If HMAC auth is configured, the webhookSecret is returned here and nowhere else — store it immediately.',
+    {
+      appSpecSection: z.string().describe('The app spec section to review and refine'),
+      testSpec: z.string().describe('The test spec to review and refine'),
+      buildRulesSpec: z.string().optional().describe('Build rules spec for context (not refined)'),
+      appSpec: z.string().optional().describe('Full living app spec for consistency checks (not refined)'),
+      metadata: z
+        .object({
+          title: z.string().optional().describe('Document title'),
+          version: z.string().optional().describe('Document version'),
+          projectContext: z.string().optional().describe('Project context for reviewers'),
+          constraints: z.array(z.string()).optional().describe('Known constraints to respect'),
+        })
+        .optional()
+        .describe('Optional metadata for context'),
+      config: z
+        .object({
+          maxRoundsPerModel: z
+            .number()
+            .positive()
+            .optional()
+            .describe('Maximum debate rounds per critic (default: 3, min: 2)'),
+          maxTotalTokens: z.number().positive().optional().describe('Hard cap on total tokens'),
+          maxEstimatedCost: z.number().positive().optional().describe('Hard cap on estimated cost (USD)'),
+          apiTimeoutMs: z.number().positive().optional().describe('Per-API-call timeout in ms'),
+          includeTranscripts: z.boolean().optional().describe('Include full debate transcripts'),
+          webhookUrl: z.string().optional().describe('URL for async completion notifications (HTTPS)'),
+          webhookAuth: z
+            .object({
+              type: z.enum(['bearer', 'hmac']).describe('Authentication method'),
+              token: z.string().optional().describe('Bearer token (required for bearer auth)'),
+            })
+            .optional()
+            .describe('Webhook authentication configuration'),
+          models: z
+            .object({
+              claude: z.string().optional().describe('Claude model ID'),
+              chatgpt: z.string().optional().describe('ChatGPT model ID'),
+              gemini: z.string().optional().describe('Gemini model ID'),
+            })
+            .optional()
+            .describe('Model configuration'),
+        })
+        .optional()
+        .describe('Optional runtime configuration'),
+    },
+    async (params) => {
+      logger.logDebug('review_build_specs called', { hasMetadata: !!params.metadata });
+
+      const result = await handleReviewBuildSpecs(params, config);
+
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  logger.logInfo('MCP server created with tools: run_prd_gauntlet, gauntlet_health, check_gauntlet_status, get_debate_transcript, list_gauntlet_jobs, clear_terminology_cache, save_job_output, load_saved_job, get_saved_prd, list_saved_jobs, review_build_specs');
 
   return server;
 }

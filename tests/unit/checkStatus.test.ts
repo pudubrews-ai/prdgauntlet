@@ -61,8 +61,9 @@ describe('handleCheckStatus', () => {
 
     expect(result).not.toHaveProperty('error');
     expect(result).toHaveProperty('status', 'complete');
-    expect(result).toHaveProperty('partialResult');
-    expect((result as any).partialResult.currentPrd).toContain('Final Refined PRD');
+    expect(result).toHaveProperty('refinedPrd');
+    expect((result as any).refinedPrd).toContain('Final Refined PRD');
+    expect(result).not.toHaveProperty('partialResult');
   });
 
   it('returns error status for failed job', () => {

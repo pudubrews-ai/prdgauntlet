@@ -3,6 +3,134 @@
 // ============================================================================
 
 // ----------------------------------------------------------------------------
+// v4.0 Job Type Discriminator
+// ----------------------------------------------------------------------------
+
+export type JobType = 'prd_refinement' | 'build_spec_review';
+
+// ----------------------------------------------------------------------------
+// v4.0 Build Spec Review Types
+// ----------------------------------------------------------------------------
+
+export interface SpecReviewMetadata {
+  title?: string;
+  version?: string;
+  projectContext?: string;
+  constraints?: string[];
+}
+
+export interface BuildSpecReviewInput {
+  appSpecSection: string;
+  testSpec: string;
+  buildRulesSpec?: string;
+  appSpec?: string;
+  metadata?: SpecReviewMetadata;
+  config?: {
+    maxRoundsPerModel?: number;
+    maxTotalTokens?: number;
+    maxEstimatedCost?: number;
+    apiTimeoutMs?: number;
+    includeTranscripts?: boolean;
+    webhookUrl?: string;
+    webhookAuth?: WebhookAuth;
+    models?: {
+      claude?: string;
+      chatgpt?: string;
+      gemini?: string;
+    };
+  };
+}
+
+export interface IssueSummary {
+  type: string;
+  location: string;
+  description: string;
+  severity: 'blocking' | 'warning' | 'info';
+}
+
+export interface CrossDocumentMismatch {
+  type: 'string_mismatch' | 'attribute_mismatch';
+  appSpecLocation: string;
+  testSpecLocation: string;
+  appSpecValue: string;
+  testSpecValue: string;
+  resolution: string;
+}
+
+export interface CrossDocumentReport {
+  alignmentScore: number;           // 0.0 - 1.0
+  mismatches: CrossDocumentMismatch[];
+  coverageMatrix: {
+    appSpecBehaviors: number;
+    testedBehaviors: number;
+    coveragePercent: number;
+  };
+}
+
+export interface OutputSummary {
+  totalRounds: number;
+  chatgptRounds: number;
+  geminiRounds: number;
+  consensusReached: boolean;
+  totalTokens: number;
+  estimatedCost: number;
+  // Spec review only:
+  issuesFound?: {
+    appSpecSection: {
+      buildability: number;
+      completeness: number;
+      ambiguity: number;
+      consistency: number;
+    };
+    testSpec: {
+      testability: number;
+      coverageGaps: number;
+      testQuality: number;
+      specAlignment: number;
+    };
+    crossDocument: {
+      orphanedTests: number;
+      untestedBehavior: number;
+      stringMismatches: number;
+      attributeMismatches: number;
+      implicitDependencies: number;
+      missingPrerequisites: number;
+    };
+  };
+  totalIssuesFound?: number;
+  totalIssuesResolved?: number;
+  unresolvedIssues?: number;
+  // PRD mode:
+  terminologyResearched?: string[];
+  cacheHits?: number;
+  cacheMisses?: number;
+}
+
+export interface BuildSpecReviewOutput {
+  jobId: string;
+  jobType: 'build_spec_review';
+  refinedAppSpecSection: string;
+  refinedTestSpec: string;
+  crossDocumentReport: CrossDocumentReport;
+  changelog: ChangeEntry[];
+  debates?: {
+    chatgpt?: DebateSummary | DebateTranscript;
+    gemini?: DebateSummary | DebateTranscript;
+  };
+  summary: OutputSummary;
+  /** @deprecated Use summary instead */
+  stats?: GauntletStats;
+  status?: string;
+  consensusReached?: boolean;
+  cdrFailures?: string[];
+}
+
+export type PrdRefinementOutput = GauntletOutput;
+
+// Discriminated union for job outputs
+export type JobOutput = PrdRefinementOutput | BuildSpecReviewOutput;
+
+// ----------------------------------------------------------------------------
 // Tool Input/Output Types
 // ----------------------------------------------------------------------------
 
@@ -35,6 +163,7 @@ export interface GauntletInput {
 
 export interface GauntletOutput {
   jobId: string;
+  jobType?: JobType; // v4.0: discriminator field; defaults to 'prd_refinement' for legacy jobs
   finalPrd: string;
   changelog: ChangeEntry[];
   debates?: {
@@ -42,8 +171,10 @@ export interface GauntletOutput {
     gemini?: DebateSummary | DebateTranscript;
   };
   stats: GauntletStats;
+  summary?: OutputSummary; // v4.0: structured summary (preferred over stats)
   divergenceReport?: DivergenceReport & { escalationOptions: EscalationOptions }; // v3.0
-  webhookSecret?: string; // v3.0: HMAC secret for webhook verification
+  status?: string;
+  consensusReached?: boolean;
 }
 
 export interface GauntletStats {
@@ -99,7 +230,7 @@ export type ModelName = 'claude' | CriticModel;
 
 export interface DebateSummary {
   rounds: number;
-  outcome: 'consensus' | 'max_rounds' | 'early_stop';
+  outcome: 'consensus' | 'max_rounds' | 'early_stop' | 'incomplete_output';
   keyChanges: string[];
   unresolvedConcerns?: string[];
 }
@@ -119,7 +250,7 @@ export interface DebateResult {
   finalPrd: string;
   transcript: DebateTranscript;
   changes: ChangeEntry[];
-  outcome: 'consensus' | 'max_rounds' | 'early_stop';
+  outcome: 'consensus' | 'max_rounds' | 'early_stop' | 'incomplete_output';
   unresolvedConcerns: string[];
   tokensUsed: {
     defender: number;
@@ -129,6 +260,20 @@ export interface DebateResult {
   loopsDetected?: number;
   transcriptCompressed?: boolean;
   sizeExceeded?: boolean;
+  // v4.0 enhancements
+  prdValidation?: {
+    isValid: boolean;
+    issues: string[];
+    diagnostics: {
+      endsCleanly: boolean;
+      hasValidMarkdown: boolean;
+      hasMinimumSections: boolean;
+      lastContent: string;
+      expectedSections?: string[];
+      missingSections?: string[];
+      truncationIndicators?: string[];
+    };
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -165,15 +310,20 @@ export type JobStatus =
   | 'awaiting_user_input'  // PRD v3.0: paused for undefined term clarification
   | 'complete'
   | 'consensus_failed'     // PRD v3.0: max rounds reached without consensus
+  | 'incomplete_output'    // PRD v4.0: job completed but PRD is truncated/invalid
   | 'error';
 
 export interface JobState {
   jobId: string;
+  jobType: JobType;  // REQUIRED (v4.0), not optional
   status: JobStatus;
   currentRound?: number;
   currentModel?: CriticModel;
   createdAt: string;
   lastUpdate: string;
+  title?: string;
+  completedAt?: string;
+  consensusReached?: boolean;
   partialResult?: {
     currentPrd: string;
     changelogSoFar: ChangeEntry[];
@@ -182,7 +332,7 @@ export interface JobState {
     chatgpt?: DebateTranscript;
     gemini?: DebateTranscript;
   };
-  result?: GauntletOutput;
+  result?: GauntletOutput | BuildSpecReviewOutput;
   error?: GauntletError;
 }
 
@@ -340,6 +490,7 @@ export interface StatusInput {
 
 export interface StatusOutput {
   jobId: string;
+  jobType?: JobType;
   status: JobStatus;
   currentRound?: number;
   currentModel?: CriticModel;
@@ -348,6 +499,14 @@ export interface StatusOutput {
     currentPrd: string;
     changelogSoFar: ChangeEntry[];
   };
+  // Terminal status result fields (complete / consensus_failed)
+  refinedPrd?: string;
+  refinedAppSpecSection?: string;
+  refinedTestSpec?: string;
+  summary?: OutputSummary;
+  crossDocumentReport?: CrossDocumentReport;
+  divergenceReport?: DivergenceReport;
+  cdrFailureReasons?: string[];
 }
 
 export interface StatusError {
@@ -384,16 +543,24 @@ export interface TranscriptError {
 
 export interface ListJobsInput {
   status?: JobStatus | 'all';
+  jobType?: JobType | 'all';
   limit?: number;
 }
 
 export interface JobSummary {
   jobId: string;
+  jobType: JobType;
   status: JobStatus;
+  title?: string;
   createdAt: string;
   lastUpdate: string;
+  completedAt?: string;
   currentRound?: number;
   currentModel?: CriticModel;
+  totalRounds?: number;
+  estimatedCost?: number;
+  consensusReached?: boolean;
+  savedToDisk?: boolean;
 }
 
 export interface ListJobsOutput {
@@ -414,6 +581,7 @@ export interface WebhookAuth {
 
 export interface WebhookPayload {
   jobId: string;
+  jobType: JobType;
   event: 'user_input_required';
   reason: 'undefined_term_stall' | 'consensus_conflict';
   details: {

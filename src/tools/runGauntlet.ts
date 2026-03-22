@@ -10,6 +10,8 @@ import type {
   GauntletConfig,
   DebateSummary,
   CriticModel,
+  JobStatus,
+  OutputSummary,
 } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
 import { CostTracker } from '../utils/cost.js';
@@ -24,6 +26,7 @@ import { memoryMonitor } from '../utils/memoryMonitor.js';
 import { validateWebhookUrl, generateHmacSecret } from '../utils/webhook.js';
 import { getTerminologyCacheStats } from '../utils/terminologyCache.js';
 import { generateDivergenceReport } from '../utils/divergenceReport.js';
+import { saveJobToDisk } from '../utils/jobPersistence.js';
 
 // Input schema for validation
 export const RunGauntletInputSchema = z.object({
@@ -69,7 +72,7 @@ export type RunGauntletInput = z.infer<typeof RunGauntletInputSchema>;
 export async function handleRunGauntlet(
   input: unknown,
   baseConfig: GauntletConfig
-): Promise<GauntletOutput | GauntletError> {
+): Promise<{ jobId: string; status: string; jobType: string; webhookSecret?: string } | GauntletError> {
   // Validate input
   const parseResult = RunGauntletInputSchema.safeParse(input);
   if (!parseResult.success) {
@@ -131,10 +134,18 @@ export async function handleRunGauntlet(
     };
   }
 
+  // S-8: Validate maxRoundsPerModel >= 2
+  if (validInput.config?.maxRoundsPerModel !== undefined && validInput.config.maxRoundsPerModel < 2) {
+    return {
+      error: 'INVALID_INPUT',
+      message: 'maxRoundsPerModel must be at least 2. Consensus requires a minimum of 2 rounds.',
+    };
+  }
+
   // v3.0: Validate webhook URL if provided
   let webhookSecret: string | undefined;
   if (validInput.config?.webhookUrl) {
-    const webhookValidation = validateWebhookUrl(validInput.config.webhookUrl);
+    const webhookValidation = await validateWebhookUrl(validInput.config.webhookUrl);
     if (!webhookValidation.valid) {
       return {
         error: 'INVALID_INPUT',
@@ -152,10 +163,10 @@ export async function handleRunGauntlet(
   // Merge runtime config
   const config = mergeWithRuntimeConfig(baseConfig, validInput.config);
 
-  // Create job
+  // Create job with jobType: 'prd_refinement'
   let jobId: string;
   try {
-    jobId = jobStore.create();
+    jobId = jobStore.create('prd_refinement');
   } catch (error) {
     return {
       error: 'CONFIG_ERROR',
@@ -166,6 +177,42 @@ export async function handleRunGauntlet(
   logger.logJobCreated(jobId);
   logger.logJobStarted(jobId, validInput.metadata?.title, config.models);
 
+  // D2: Return immediately with job handle
+  const immediateResponse = {
+    jobId,
+    status: 'idle' as const,
+    jobType: 'prd_refinement' as const,
+    ...(webhookSecret && { webhookSecret }),
+  };
+
+  // D2: Run debate asynchronously — same pattern as reviewBuildSpecs.ts
+  setImmediate(async () => {
+    try {
+      await runPrdDebate({ jobId, validInput, config, baseConfig, webhookSecret });
+    } catch (error) {
+      logger.logError('PRD gauntlet debate failed unexpectedly', {
+        jobId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      jobStore.fail(jobId, {
+        error: 'PROVIDER_ERROR',
+        message: 'PRD gauntlet debate encountered an error. Check server logs.',
+      });
+    }
+  });
+
+  return immediateResponse;
+}
+
+interface PrdDebateParams {
+  jobId: string;
+  validInput: GauntletInput;
+  config: GauntletConfig;
+  baseConfig: GauntletConfig;
+  webhookSecret?: string;
+}
+
+async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDebateParams): Promise<void> {
   // Check model availability
   const validationCache = getValidationCache();
   const skippedCritics: Array<{ model: CriticModel; reason: string }> = [];
@@ -179,11 +226,7 @@ export async function handleRunGauntlet(
       error: 'PROVIDER_ERROR',
       message: 'Claude (defender) is unavailable. Cannot proceed with gauntlet.',
     });
-    return {
-      error: 'PROVIDER_ERROR',
-      message: 'Claude (defender) is unavailable. Cannot proceed with gauntlet.',
-      details: { validation: validationCache?.claude },
-    };
+    return;
   }
 
   if (!chatgptAvailable) {
@@ -192,10 +235,7 @@ export async function handleRunGauntlet(
         error: 'PROVIDER_ERROR',
         message: 'ChatGPT is unavailable and fallback policy is set to error.',
       });
-      return {
-        error: 'PROVIDER_ERROR',
-        message: 'ChatGPT is unavailable and fallback policy is set to error.',
-      };
+      return;
     }
     skippedCritics.push({
       model: 'chatgpt',
@@ -209,10 +249,7 @@ export async function handleRunGauntlet(
         error: 'PROVIDER_ERROR',
         message: 'Gemini is unavailable and fallback policy is set to error.',
       });
-      return {
-        error: 'PROVIDER_ERROR',
-        message: 'Gemini is unavailable and fallback policy is set to error.',
-      };
+      return;
     }
     skippedCritics.push({
       model: 'gemini',
@@ -220,8 +257,16 @@ export async function handleRunGauntlet(
     });
   }
 
-  // If all critics are skipped, return original PRD
+  // If all critics are skipped, store output and mark complete
   if (skippedCritics.length === 2) {
+    const summary: OutputSummary = {
+      totalRounds: 0,
+      chatgptRounds: 0,
+      geminiRounds: 0,
+      consensusReached: false,
+      totalTokens: 0,
+      estimatedCost: 0,
+    };
     const output: GauntletOutput = {
       jobId,
       finalPrd: validInput.prd,
@@ -232,9 +277,13 @@ export async function handleRunGauntlet(
         estimatedCost: 0,
         skippedCritics,
       },
+      summary,
+      status: 'complete',
+      consensusReached: false,
     };
+    // D6: Store clean output without webhookSecret
     jobStore.complete(jobId, output);
-    return output;
+    return;
   }
 
   // Initialize tracking
@@ -288,12 +337,8 @@ export async function handleRunGauntlet(
       // Store transcript
       jobStore.storeTranscript(jobId, 'chatgpt', result.transcript);
 
-      // Store summary (or full transcript if requested)
-      if (config.includeTranscripts || validInput.config?.includeTranscripts) {
-        debates.chatgpt = result.transcript.summary;
-      } else {
-        debates.chatgpt = result.transcript.summary;
-      }
+      // Store summary
+      debates.chatgpt = result.transcript.summary;
 
       // Update partial result
       jobStore.updateDebateProgress(
@@ -322,17 +367,14 @@ export async function handleRunGauntlet(
       if (config.fallbackPolicy.onModelUnavailable === 'error') {
         jobStore.fail(jobId, {
           error: 'PROVIDER_ERROR',
-          message: `ChatGPT debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'ChatGPT debate encountered an error. Check server logs for details.',
         });
-        return {
-          error: 'PROVIDER_ERROR',
-          message: `ChatGPT debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        };
+        return;
       }
 
       skippedCritics.push({
         model: 'chatgpt',
-        reason: error instanceof Error ? error.message : 'Unknown error',
+        reason: 'Provider error (see server logs)',
       });
     }
   }
@@ -382,17 +424,14 @@ export async function handleRunGauntlet(
       if (config.fallbackPolicy.onModelUnavailable === 'error') {
         jobStore.fail(jobId, {
           error: 'PROVIDER_ERROR',
-          message: `Gemini debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          message: 'Gemini debate encountered an error. Check server logs for details.',
         });
-        return {
-          error: 'PROVIDER_ERROR',
-          message: `Gemini debate failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        };
+        return;
       }
 
       skippedCritics.push({
         model: 'gemini',
-        reason: error instanceof Error ? error.message : 'Unknown error',
+        reason: 'Provider error (see server logs)',
       });
     }
   }
@@ -403,8 +442,33 @@ export async function handleRunGauntlet(
   );
   const consensusFailed = !allDebatesReached && !stoppedEarly;
 
+  // v4.0: Check if any debate produced incomplete output
+  const hasIncompleteOutput = Object.values(debates).some(
+    (d) => d && d.outcome === 'incomplete_output'
+  );
+
   // Build final output
   const tokenCounts = costTracker.getTokenCountByModel();
+  const totalTokens = tokenCounts.claude + tokenCounts.chatgpt + tokenCounts.gemini;
+
+  // D1: Build OutputSummary
+  const cacheStats = getTerminologyCacheStats();
+  const summary: OutputSummary = {
+    totalRounds,
+    chatgptRounds: debates.chatgpt?.rounds ?? 0,
+    geminiRounds: debates.gemini?.rounds ?? 0,
+    consensusReached: allDebatesReached,
+    totalTokens,
+    estimatedCost: costTracker.getEstimatedCostRounded(),
+    ...(cacheStats.hits > 0 || cacheStats.misses > 0
+      ? {
+          cacheHits: cacheStats.hits,
+          cacheMisses: cacheStats.misses,
+        }
+      : {}),
+  };
+
+  // D6: Build output WITHOUT webhookSecret
   const output: GauntletOutput = {
     jobId,
     finalPrd: currentPrd,
@@ -416,6 +480,7 @@ export async function handleRunGauntlet(
       ...(stoppedEarly && { stoppedEarly }),
       ...(skippedCritics.length > 0 && { skippedCritics }),
     },
+    summary,
   };
 
   // Only include debates if at least one critic ran
@@ -424,7 +489,6 @@ export async function handleRunGauntlet(
   }
 
   // v3.0: Add cache stats if terminology research was used
-  const cacheStats = getTerminologyCacheStats();
   if (cacheStats.hits > 0 || cacheStats.misses > 0) {
     output.stats.cacheStats = {
       hits: cacheStats.hits,
@@ -465,19 +529,36 @@ export async function handleRunGauntlet(
     });
   }
 
-  // v3.0: Include webhook secret if generated
-  if (webhookSecret) {
-    output.webhookSecret = webhookSecret;
+  // v4.0: Determine final job status based on outcomes
+  let finalStatus: JobStatus = 'complete';
+  if (hasIncompleteOutput) {
+    finalStatus = 'incomplete_output';
+  } else if (consensusFailed) {
+    finalStatus = 'consensus_failed';
   }
 
-  // Complete job
-  jobStore.complete(jobId, output);
+  // D4: Persist status and consensusReached on the output for disk retrieval
+  output.status = finalStatus;
+  output.consensusReached = allDebatesReached;
+
+  // D6: Store clean output (no webhookSecret) in memory
+  jobStore.complete(jobId, output, finalStatus);
 
   logger.logJobCompleted(jobId, {
     rounds: totalRounds,
     cost: costTracker.getEstimatedCostRounded(),
-    outcome: stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
+    outcome: hasIncompleteOutput ? 'incomplete_output' : stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
-  return output;
+  // Auto-save completed job to disk (D6: webhookSecret was never placed on output object)
+  try {
+    await saveJobToDisk(jobId, output);
+    logger.logInfo('Job auto-saved to disk', { jobId });
+  } catch (error) {
+    logger.logWarn('Failed to auto-save job to disk', {
+      jobId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    // Don't fail the job if save fails
+  }
 }

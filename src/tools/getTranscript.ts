@@ -3,8 +3,9 @@
 // ============================================================================
 
 import { z } from 'zod';
-import type { TranscriptOutput, TranscriptError, CriticModel } from '../types/index.js';
+import type { TranscriptOutput, TranscriptError, CriticModel, DebateSummary, DebateMessage } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
+import { loadJobFromDisk } from '../utils/jobPersistence.js';
 
 // Input schema
 export const TranscriptInputSchema = z.object({
@@ -14,9 +15,9 @@ export const TranscriptInputSchema = z.object({
 
 export type TranscriptInput = z.infer<typeof TranscriptInputSchema>;
 
-export function handleGetTranscript(
+export async function handleGetTranscript(
   input: unknown
-): TranscriptOutput | TranscriptError {
+): Promise<TranscriptOutput | TranscriptError> {
   // Validate input
   const parseResult = TranscriptInputSchema.safeParse(input);
   if (!parseResult.success) {
@@ -28,12 +29,80 @@ export function handleGetTranscript(
 
   const { jobId, model } = parseResult.data;
 
-  // Look up job
+  // Look up job in memory
   const job = jobStore.get(jobId);
   if (!job) {
+    // Disk fallback: try to load saved job
+    try {
+      const savedOutput = await loadJobFromDisk(jobId);
+      if (savedOutput) {
+        const savedData = savedOutput as unknown as Record<string, unknown>;
+        const debates = savedData.debates;
+        if (debates && typeof debates === 'object') {
+          const debateRecord = debates as Record<string, unknown>;
+          const modelKey = model as CriticModel;
+          const debate = debateRecord[modelKey];
+
+          if (debate !== undefined) {
+            // Validate minimum shape of debate entry
+            if (typeof debate !== 'object' || debate === null || Array.isArray(debate)) {
+              return {
+                error: 'TRANSCRIPT_UNAVAILABLE' as const,
+                message: 'Saved transcript data is corrupted or in an unrecognized format.',
+              };
+            }
+
+            const debateObj = debate as Record<string, unknown>;
+            const summaryValid =
+              debateObj.summary === undefined ||
+              debateObj.summary === null ||
+              (typeof debateObj.summary === 'object' && !Array.isArray(debateObj.summary));
+            const messagesSource = debateObj.messages ?? debateObj.exchanges;
+            const messagesValid =
+              messagesSource === undefined ||
+              messagesSource === null ||
+              Array.isArray(messagesSource);
+
+            if (!summaryValid || !messagesValid) {
+              return {
+                error: 'TRANSCRIPT_UNAVAILABLE' as const,
+                message: 'Saved transcript data is corrupted or in an unrecognized format.',
+              };
+            }
+
+            const summary: DebateSummary =
+              typeof debateObj.summary === 'object' && debateObj.summary !== null
+                ? debateObj.summary as unknown as DebateSummary
+                : {
+                    rounds: typeof debateObj.rounds === 'number' ? debateObj.rounds : 0,
+                    outcome: 'unknown' as DebateSummary['outcome'],
+                    keyChanges: Array.isArray(debateObj.keyChanges) ? debateObj.keyChanges as string[] : [],
+                  };
+            const messages: DebateMessage[] = Array.isArray(messagesSource)
+              ? messagesSource as unknown as DebateMessage[]
+              : [];
+
+            return {
+              transcript: { summary, messages },
+            };
+          }
+          return {
+            error: 'TRANSCRIPT_UNAVAILABLE',
+            message: `No transcript found for model ${model} in saved job.`,
+          };
+        }
+        // Saved job exists but no debates stored
+        return {
+          error: 'TRANSCRIPT_UNAVAILABLE',
+          message: 'Transcripts were not included in the saved job. Run the job again with includeTranscripts: true.',
+        };
+      }
+    } catch {
+      // Disk load failed, fall through to JOB_NOT_FOUND
+    }
     return {
       error: 'JOB_NOT_FOUND',
-      message: 'Job ID not found. Jobs are ephemeral and lost on server restart.',
+      message: 'Job ID not found in memory or on disk.',
     };
   }
 
@@ -50,7 +119,7 @@ export function handleGetTranscript(
     }
   }
 
-  // Get transcript
+  // Get transcript from memory
   const transcript = jobStore.getTranscript(jobId, model as CriticModel);
   if (!transcript) {
     return {

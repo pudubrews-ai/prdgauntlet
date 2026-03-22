@@ -13,6 +13,11 @@ const APPROVAL_PHRASES = [
   'This PRD is ready for implementation',
   'CONSENSUS_REACHED',
   'No further concerns. PRD approved.', // Legacy v2.6 phrase
+  // v4.0 spec review phrases
+  'I have no further concerns.',
+  'I have no further concerns',
+  'These specs are ready for implementation.',
+  'These specs are ready for implementation',
 ];
 
 // Minimum rounds required (Threshold #1)
@@ -20,6 +25,22 @@ const MIN_ROUNDS_REQUIRED = 2;
 
 // Max new issues allowed in final round for declining rate (Threshold #4)
 const MAX_NEW_ISSUES_FINAL_ROUND = 3;
+
+/**
+ * Strip quoted content to prevent consensus gaming (F-10, Adversary Finding 7)
+ * Removes code blocks, inline code, blockquotes, and double-quoted strings.
+ */
+function stripQuotedContent(response: string): string {
+  // Remove code blocks
+  let cleaned = response.replace(/```[\s\S]*?```/g, '');
+  // Remove inline code
+  cleaned = cleaned.replace(/`[^`]+`/g, '');
+  // Remove blockquotes
+  cleaned = cleaned.replace(/^>\s.*$/gm, '');
+  // Remove content in double quotes
+  cleaned = cleaned.replace(/"[^"]*"/g, '');
+  return cleaned;
+}
 
 /**
  * Detect consensus using PRD v3.0 quantitative thresholds
@@ -31,11 +52,14 @@ const MAX_NEW_ISSUES_FINAL_ROUND = 3;
 export function detectConsensus(response: string): ConsensusResult {
   const trimmed = response.trim();
 
+  // F-10: Strip quoted content before checking approval phrases to prevent consensus gaming
+  const cleanedForPhraseCheck = stripQuotedContent(trimmed);
+
   // Threshold #5: Check for exact approval phrase match
   const hasApprovalPhrase = APPROVAL_PHRASES.some(phrase => {
     // Case-insensitive, allows for trailing punctuation
     const pattern = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    return pattern.test(trimmed);
+    return pattern.test(cleanedForPhraseCheck);
   });
 
   if (hasApprovalPhrase) {
@@ -105,6 +129,10 @@ export interface FullConsensusContext {
   critiqueResponse: string;
   newIssuesThisRound: number;
   previousIssuesCount?: number;
+  // v4.0 spec review optional fields (F-9)
+  crossDocumentAlignmentScore?: number;
+  stringMismatchCount?: number;
+  untestedBehaviorCount?: number;
 }
 
 export function checkFullConsensus(context: FullConsensusContext): {
@@ -148,6 +176,23 @@ export function checkFullConsensus(context: FullConsensusContext): {
   if (!consensusResult.isConsensus) {
     failedThresholds.push('approval_phrase');
     details.hasApprovalPhrase = false;
+  }
+
+  // v4.0 spec review thresholds (F-9)
+  if (context.crossDocumentAlignmentScore !== undefined) {
+    if (context.crossDocumentAlignmentScore < 0.90) {
+      failedThresholds.push('cross_document_alignment');
+      details.crossDocumentAlignmentScore = context.crossDocumentAlignmentScore;
+    }
+  }
+
+  if (
+    (context.stringMismatchCount !== undefined && context.stringMismatchCount > 0) ||
+    (context.untestedBehaviorCount !== undefined && context.untestedBehaviorCount > 0)
+  ) {
+    failedThresholds.push('cross_document_blocking_issues');
+    details.stringMismatchCount = context.stringMismatchCount;
+    details.untestedBehaviorCount = context.untestedBehaviorCount;
   }
 
   const consensusReached = failedThresholds.length === 0;

@@ -39,6 +39,7 @@ export function handleCheckStatus(
   // Build response based on status
   const response: StatusOutput = {
     jobId: job.jobId,
+    jobType: job.jobType,
     status: job.status,
     lastUpdate: job.lastUpdate,
   };
@@ -56,25 +57,45 @@ export function handleCheckStatus(
     }
   }
 
-  // If complete, include the full result
-  if (job.status === 'complete' && job.result) {
-    // Return the final result directly - this is the key retrieval case
-    return {
-      jobId: job.jobId,
-      status: job.status,
-      lastUpdate: job.lastUpdate,
-      // Include finalPrd in partialResult for completed jobs (allows retrieval)
-      partialResult: {
-        currentPrd: job.result.finalPrd,
-        changelogSoFar: job.result.changelog,
-      },
-    };
+  // If complete or consensus_failed, include the full result
+  if ((job.status === 'complete' || job.status === 'consensus_failed') && job.result) {
+    const result = job.result as any;
+
+    if (job.jobType === 'build_spec_review') {
+      const specResult: StatusOutput = {
+        jobId: job.jobId,
+        jobType: job.jobType,
+        status: job.status,
+        lastUpdate: job.lastUpdate,
+        refinedAppSpecSection: result.refinedAppSpecSection ?? '',
+        refinedTestSpec: result.refinedTestSpec ?? '',
+        summary: result.summary,
+        crossDocumentReport: result.crossDocumentReport,
+        ...(result.divergenceReport && { divergenceReport: result.divergenceReport }),
+        ...(result.cdrFailures && { cdrFailureReasons: result.cdrFailures }),
+      };
+      return specResult;
+    } else {
+      // prd_refinement
+      const prdResult: StatusOutput = {
+        jobId: job.jobId,
+        jobType: job.jobType,
+        status: job.status,
+        lastUpdate: job.lastUpdate,
+        refinedPrd: result.finalPrd ?? '',
+        summary: result.summary ?? result.stats,
+        ...(result.divergenceReport && { divergenceReport: result.divergenceReport }),
+        ...(result.cdrFailures && { cdrFailureReasons: result.cdrFailures }),
+      };
+      return prdResult;
+    }
   }
 
   // If error, include error info
   if (job.status === 'error' && job.error) {
     return {
       jobId: job.jobId,
+      jobType: job.jobType,
       status: job.status,
       lastUpdate: job.lastUpdate,
     };
