@@ -110,6 +110,17 @@ export async function loadJobFromDisk(
       output.jobType = 'prd_refinement';
     }
 
+    // Bug 1 (S9): Backward-compat migration shim for legacy stoppedEarly formats.
+    // v3.x persisted stoppedEarly as a boolean; v4.0.0 persisted it as a single object.
+    const outputAny2 = output as any;
+    if (outputAny2.stats?.stoppedEarly !== undefined) {
+      if (typeof outputAny2.stats.stoppedEarly === 'boolean') {
+        // Legacy v3.x boolean format — convert to null (boolean true meant "stopped" with no details)
+        outputAny2.stats.stoppedEarly = null;
+      }
+      // v4.0.0 object format is compatible with new code — no action needed
+    }
+
     // D11: Normalize legacy `stats` field to canonical `summary` shape
     const outputAny = output as any;
     if (!outputAny.summary && outputAny.stats) {

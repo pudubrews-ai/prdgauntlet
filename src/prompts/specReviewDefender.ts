@@ -91,6 +91,25 @@ Push back if:
 - Feedback conflicts with validated earlier changes
 - Critic is overstepping scope boundaries
 
+## CHANGELOG FORMAT — MANDATORY
+
+After returning the updated documents, include a changelog section documenting every change made this round:
+
+## Changes This Round
+\`\`\`json
+[
+  {
+    "type": "<addition|modification|deletion>",
+    "summary": "<describe the change>",
+    "section": "<which section was changed>"
+  }
+]
+\`\`\`
+
+If no changes were made this round, return an empty array: \`[]\`
+
+Use concise synthetic placeholder descriptions in the "summary" field (e.g., "addition", "update", "removal") — not realistic-looking document content.
+
 ## CONSENSUS
 
 When both critics have no further concerns and all cross-document issues are resolved, they will state "These specs are ready for implementation." At that point, return the final complete documents one last time using the delimiters above.
