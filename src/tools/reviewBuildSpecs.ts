@@ -10,6 +10,9 @@ import type {
   GauntletError,
   CriticModel,
   JobStatus,
+  OutputSummary,
+  ChangeEntry,
+  CrossDocumentReport,
 } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
 import { CostTracker } from '../utils/cost.js';
@@ -240,6 +243,75 @@ export async function handleReviewBuildSpecs(
   return immediateResponse;
 }
 
+/**
+ * D1: Compute issues found breakdown from changelog and cross-document report.
+ * Classifies changelog entries heuristically and uses CDR data for cross-document counts.
+ */
+function computeIssuesFound(
+  changelog: ChangeEntry[],
+  crossDocumentReport: CrossDocumentReport
+): NonNullable<OutputSummary['issuesFound']> {
+  // Cross-document counts come directly from CDR
+  const stringMismatches = crossDocumentReport.mismatches.filter(m => m.type === 'string_mismatch').length;
+  const attributeMismatches = crossDocumentReport.mismatches.filter(m => m.type === 'attribute_mismatch').length;
+  const untestedBehavior = Math.max(
+    0,
+    crossDocumentReport.coverageMatrix.appSpecBehaviors - crossDocumentReport.coverageMatrix.testedBehaviors
+  );
+
+  // Classify changelog entries heuristically by summary keywords
+  let buildability = 0;
+  let completeness = 0;
+  let ambiguity = 0;
+  let consistency = 0;
+  let testability = 0;
+  let coverageGaps = 0;
+  let testQuality = 0;
+  let specAlignment = 0;
+
+  for (const entry of changelog) {
+    const s = entry.summary.toLowerCase();
+    const section = (entry.section ?? '').toLowerCase();
+
+    // Test-spec related entries
+    if (section.includes('test') || s.includes('test')) {
+      if (s.includes('coverage') || s.includes('gap')) {
+        coverageGaps++;
+      } else if (s.includes('quality') || s.includes('assertion') || s.includes('scenario')) {
+        testQuality++;
+      } else if (s.includes('align') || s.includes('mismatch') || s.includes('inconsist')) {
+        specAlignment++;
+      } else {
+        testability++;
+      }
+    } else {
+      // App spec entries
+      if (s.includes('build') || s.includes('compil') || s.includes('deploy')) {
+        buildability++;
+      } else if (s.includes('missing') || s.includes('incomplete') || s.includes('add')) {
+        completeness++;
+      } else if (s.includes('ambig') || s.includes('unclear') || s.includes('clarif')) {
+        ambiguity++;
+      } else {
+        consistency++;
+      }
+    }
+  }
+
+  return {
+    appSpecSection: { buildability, completeness, ambiguity, consistency },
+    testSpec: { testability, coverageGaps, testQuality, specAlignment },
+    crossDocument: {
+      orphanedTests: 0, // Cannot reliably detect without test runner
+      untestedBehavior,
+      stringMismatches,
+      attributeMismatches,
+      implicitDependencies: 0,
+      missingPrerequisites: 0,
+    },
+  };
+}
+
 interface SpecReviewDebateParams {
   jobId: string;
   validInput: ReviewBuildSpecsInput;
@@ -385,25 +457,100 @@ async function runSpecReviewDebate({
   // Compute cross-document report (AD-4: post-processing)
   const crossDocumentReport = computeCrossDocumentReport(refinedAppSpecSection, refinedTestSpec);
 
+  // D7: Enforce CDR consensus gates post-hoc
+  let cdrGateFailed = false;
+  const cdrFailures: string[] = [];
+
+  if (crossDocumentReport.alignmentScore < 0.90) {
+    cdrGateFailed = true;
+    cdrFailures.push(`alignmentScore ${crossDocumentReport.alignmentScore.toFixed(4)} < 0.90`);
+  }
+
+  const stringMismatches = crossDocumentReport.mismatches.filter(m => m.type === 'string_mismatch').length;
+  if (stringMismatches > 0) {
+    cdrGateFailed = true;
+    cdrFailures.push(`${stringMismatches} string mismatch(es) remain`);
+  }
+
+  const untestedBehaviors = crossDocumentReport.coverageMatrix.appSpecBehaviors - crossDocumentReport.coverageMatrix.testedBehaviors;
+  if (untestedBehaviors > 0) {
+    cdrGateFailed = true;
+    cdrFailures.push(`${untestedBehaviors} untested behavior(s)`);
+  }
+
+  const allDebatesConsensus = Object.values(debates).every(d => d && (d as any).outcome === 'consensus');
+
+  // D7: If debate said "complete" but CDR gates fail, downgrade to consensus_failed
+  let finalStatus: JobStatus;
+  if (cdrGateFailed) {
+    finalStatus = 'consensus_failed';
+    logger.logInfo('CDR gates failed, downgrading to consensus_failed', { jobId, cdrFailures });
+  } else {
+    finalStatus = allDebatesConsensus ? 'complete' : 'consensus_failed';
+  }
+
+  const consensusReached = finalStatus === 'complete';
+
   const tokenCounts = costTracker.getTokenCountByModel();
+  const totalTokens = tokenCounts.claude + tokenCounts.chatgpt + tokenCounts.gemini;
+
+  // D1: Build issuesFound breakdown from changelog and crossDocumentReport
+  const changelogEntries = changelog.getChangelog();
+  const issuesFound = computeIssuesFound(changelogEntries, crossDocumentReport);
+  const totalIssuesFound = issuesFound.appSpecSection.buildability +
+    issuesFound.appSpecSection.completeness +
+    issuesFound.appSpecSection.ambiguity +
+    issuesFound.appSpecSection.consistency +
+    issuesFound.testSpec.testability +
+    issuesFound.testSpec.coverageGaps +
+    issuesFound.testSpec.testQuality +
+    issuesFound.testSpec.specAlignment +
+    issuesFound.crossDocument.orphanedTests +
+    issuesFound.crossDocument.untestedBehavior +
+    issuesFound.crossDocument.stringMismatches +
+    issuesFound.crossDocument.attributeMismatches +
+    issuesFound.crossDocument.implicitDependencies +
+    issuesFound.crossDocument.missingPrerequisites;
+
+  // Resolved = changelog entries that are not reverts and have no revertedChange pointer
+  const totalIssuesResolved = changelogEntries.filter(c => c.type !== 'revert' && !c.revertedChange).length;
+  const unresolvedIssues = Math.max(0, totalIssuesFound - totalIssuesResolved);
+
+  // Helper to extract rounds from DebateSummary or DebateTranscript
+  const getRounds = (d: (typeof debates)[keyof typeof debates]): number => {
+    if (!d) return 0;
+    if ('rounds' in d) return (d as import('../types/index.js').DebateSummary).rounds;
+    if ('summary' in d) return (d as import('../types/index.js').DebateTranscript).summary.rounds;
+    return 0;
+  };
+
+  // D1: Build OutputSummary
+  const summary: OutputSummary = {
+    totalRounds,
+    chatgptRounds: getRounds(debates.chatgpt),
+    geminiRounds: getRounds(debates.gemini),
+    consensusReached,
+    totalTokens,
+    estimatedCost: costTracker.getEstimatedCostRounded(),
+    issuesFound,
+    totalIssuesFound,
+    totalIssuesResolved,
+    unresolvedIssues,
+  };
+
   const output: BuildSpecReviewOutput = {
     jobId,
     jobType: 'build_spec_review',
     refinedAppSpecSection,
     refinedTestSpec,
     crossDocumentReport,
-    changelog: changelog.getChangelog(),
+    changelog: changelogEntries,
     debates,
-    stats: {
-      totalRounds,
-      tokensUsed: tokenCounts,
-      estimatedCost: costTracker.getEstimatedCostRounded(),
-      ...(skippedCritics.length > 0 && { skippedCritics }),
-    },
+    summary,
+    // D4: persist status and consensusReached for disk retrieval
+    status: finalStatus,
+    consensusReached,
   };
-
-  const allDebatesConsensus = Object.values(debates).every(d => d && (d as any).outcome === 'consensus');
-  const finalStatus: JobStatus = allDebatesConsensus ? 'complete' : 'consensus_failed';
 
   jobStore.complete(jobId, output, finalStatus);
 

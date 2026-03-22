@@ -15,9 +15,16 @@ export type ListSavedJobsInput = z.infer<typeof ListSavedJobsInputSchema>;
 export interface ListSavedJobsResult {
   jobs: Array<{
     jobId: string;
+    jobType: string;
+    status: string;
+    title?: string;
     savedAt: string;
+    createdAt?: string;
+    completedAt?: string;
     rounds?: number;
     cost?: number;
+    consensusReached?: boolean;
+    savedToDisk: true;
   }>;
   count: number;
 }

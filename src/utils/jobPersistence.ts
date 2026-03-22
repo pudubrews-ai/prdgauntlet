@@ -5,7 +5,7 @@
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
-import type { GauntletOutput } from '../types/index.js';
+import type { GauntletOutput, JobType } from '../types/index.js';
 import { logger } from './logger.js';
 
 // Default jobs directory: ~/.gauntlet/jobs/
@@ -127,14 +127,21 @@ export async function loadJobFromDisk(
 }
 
 /**
- * List all saved jobs
+ * List all saved jobs with enriched metadata (D4)
  */
 export async function listSavedJobs(): Promise<
   Array<{
     jobId: string;
+    jobType: JobType;
+    status: string;
+    title?: string;
     savedAt: string;
+    createdAt?: string;
+    completedAt?: string;
     rounds?: number;
     cost?: number;
+    consensusReached?: boolean;
+    savedToDisk: true;
   }>
 > {
   const jobsDir = getJobsDir();
@@ -154,19 +161,56 @@ export async function listSavedJobs(): Promise<
         try {
           const stats = await fs.stat(filePath);
           const data = await fs.readFile(filePath, 'utf-8');
-          let output: GauntletOutput;
+          let output: any;
           try {
-            output = JSON.parse(data) as GauntletOutput;
+            output = JSON.parse(data);
           } catch {
             const stats2 = await fs.stat(filePath);
-            return { jobId, savedAt: stats2.mtime.toISOString() };
+            return {
+              jobId,
+              jobType: 'prd_refinement' as JobType,
+              status: 'complete',
+              savedAt: stats2.mtime.toISOString(),
+              savedToDisk: true as const,
+            };
           }
+
+          // D4: Derive status and consensusReached from saved fields or from debate outcomes
+          let status: string = output.status ?? 'complete';
+          let consensusReached: boolean | undefined = output.consensusReached;
+
+          // Fallback: derive from debates outcome if not explicitly stored
+          if (consensusReached === undefined && output.debates) {
+            const debateValues = Object.values(output.debates) as any[];
+            consensusReached = debateValues.length > 0 && debateValues.every(
+              (d: any) => d && (d.outcome === 'consensus' || (d.summary && d.summary.outcome === 'consensus'))
+            );
+          }
+
+          // Fallback: if divergenceReport present, status was consensus_failed
+          if (!output.status && output.divergenceReport) {
+            status = 'consensus_failed';
+            consensusReached = false;
+          }
+
+          // D1: support summary.totalRounds / summary.estimatedCost (new) and stats (legacy)
+          const rounds: number | undefined =
+            output.summary?.totalRounds ?? output.stats?.totalRounds;
+          const cost: number | undefined =
+            output.summary?.estimatedCost ?? output.stats?.estimatedCost;
 
           return {
             jobId,
+            jobType: (output.jobType ?? 'prd_refinement') as JobType,
+            status,
+            title: output.metadata?.title,
             savedAt: stats.mtime.toISOString(),
-            rounds: output.stats?.totalRounds,
-            cost: output.stats?.estimatedCost,
+            createdAt: output.createdAt,
+            completedAt: output.completedAt,
+            rounds,
+            cost,
+            ...(consensusReached !== undefined && { consensusReached }),
+            savedToDisk: true as const,
           };
         } catch (error) {
           logger.logWarn('Failed to read job metadata', {
@@ -178,10 +222,19 @@ export async function listSavedJobs(): Promise<
             const stats = await fs.stat(filePath);
             return {
               jobId,
+              jobType: 'prd_refinement' as JobType,
+              status: 'complete',
               savedAt: stats.mtime.toISOString(),
+              savedToDisk: true as const,
             };
           } catch {
-            return { jobId, savedAt: new Date().toISOString() };
+            return {
+              jobId,
+              jobType: 'prd_refinement' as JobType,
+              status: 'complete',
+              savedAt: new Date().toISOString(),
+              savedToDisk: true as const,
+            };
           }
         }
       })

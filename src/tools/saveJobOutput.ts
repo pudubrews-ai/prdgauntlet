@@ -51,11 +51,12 @@ export async function handleSaveJobOutput(
     };
   }
 
-  // Check if job is complete
-  if (job.status !== 'complete' && job.status !== 'error') {
+  // Check if job is in a terminal state (D5: consensus_failed is also a terminal state)
+  const TERMINAL_STATUSES = new Set(['complete', 'error', 'consensus_failed', 'incomplete_output']);
+  if (!TERMINAL_STATUSES.has(job.status)) {
     return {
       error: 'JOB_NOT_COMPLETE',
-      message: `Job is still ${job.status}. Only completed or errored jobs can be saved.`,
+      message: `Job is still ${job.status}. Only completed, errored, or failed-consensus jobs can be saved.`,
     };
   }
 

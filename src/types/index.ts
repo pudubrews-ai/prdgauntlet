@@ -67,6 +67,45 @@ export interface CrossDocumentReport {
   };
 }
 
+export interface OutputSummary {
+  totalRounds: number;
+  chatgptRounds: number;
+  geminiRounds: number;
+  consensusReached: boolean;
+  totalTokens: number;
+  estimatedCost: number;
+  // Spec review only:
+  issuesFound?: {
+    appSpecSection: {
+      buildability: number;
+      completeness: number;
+      ambiguity: number;
+      consistency: number;
+    };
+    testSpec: {
+      testability: number;
+      coverageGaps: number;
+      testQuality: number;
+      specAlignment: number;
+    };
+    crossDocument: {
+      orphanedTests: number;
+      untestedBehavior: number;
+      stringMismatches: number;
+      attributeMismatches: number;
+      implicitDependencies: number;
+      missingPrerequisites: number;
+    };
+  };
+  totalIssuesFound?: number;
+  totalIssuesResolved?: number;
+  unresolvedIssues?: number;
+  // PRD mode:
+  terminologyResearched?: string[];
+  cacheHits?: number;
+  cacheMisses?: number;
+}
+
 export interface BuildSpecReviewOutput {
   jobId: string;
   jobType: 'build_spec_review';
@@ -78,8 +117,12 @@ export interface BuildSpecReviewOutput {
     chatgpt?: DebateSummary | DebateTranscript;
     gemini?: DebateSummary | DebateTranscript;
   };
-  stats: GauntletStats;
+  summary: OutputSummary;
+  /** @deprecated Use summary instead */
+  stats?: GauntletStats;
   webhookSecret?: string;
+  status?: string;
+  consensusReached?: boolean;
 }
 
 export type PrdRefinementOutput = GauntletOutput;
@@ -128,8 +171,11 @@ export interface GauntletOutput {
     gemini?: DebateSummary | DebateTranscript;
   };
   stats: GauntletStats;
+  summary?: OutputSummary; // v4.0: structured summary (preferred over stats)
   divergenceReport?: DivergenceReport & { escalationOptions: EscalationOptions }; // v3.0
   webhookSecret?: string; // v3.0: HMAC secret for webhook verification
+  status?: string;
+  consensusReached?: boolean;
 }
 
 export interface GauntletStats {
@@ -445,6 +491,7 @@ export interface StatusInput {
 
 export interface StatusOutput {
   jobId: string;
+  jobType?: JobType;
   status: JobStatus;
   currentRound?: number;
   currentModel?: CriticModel;

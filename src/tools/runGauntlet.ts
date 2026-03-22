@@ -11,6 +11,7 @@ import type {
   DebateSummary,
   CriticModel,
   JobStatus,
+  OutputSummary,
 } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
 import { CostTracker } from '../utils/cost.js';
@@ -71,7 +72,7 @@ export type RunGauntletInput = z.infer<typeof RunGauntletInputSchema>;
 export async function handleRunGauntlet(
   input: unknown,
   baseConfig: GauntletConfig
-): Promise<GauntletOutput | GauntletError> {
+): Promise<{ jobId: string; status: string; jobType: string; webhookSecret?: string } | GauntletError> {
   // Validate input
   const parseResult = RunGauntletInputSchema.safeParse(input);
   if (!parseResult.success) {
@@ -176,6 +177,42 @@ export async function handleRunGauntlet(
   logger.logJobCreated(jobId);
   logger.logJobStarted(jobId, validInput.metadata?.title, config.models);
 
+  // D2: Return immediately with job handle
+  const immediateResponse = {
+    jobId,
+    status: 'idle' as const,
+    jobType: 'prd_refinement' as const,
+    ...(webhookSecret && { webhookSecret }),
+  };
+
+  // D2: Run debate asynchronously — same pattern as reviewBuildSpecs.ts
+  setImmediate(async () => {
+    try {
+      await runPrdDebate({ jobId, validInput, config, baseConfig, webhookSecret });
+    } catch (error) {
+      logger.logError('PRD gauntlet debate failed unexpectedly', {
+        jobId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      jobStore.fail(jobId, {
+        error: 'PROVIDER_ERROR',
+        message: 'PRD gauntlet debate encountered an error. Check server logs.',
+      });
+    }
+  });
+
+  return immediateResponse;
+}
+
+interface PrdDebateParams {
+  jobId: string;
+  validInput: GauntletInput;
+  config: GauntletConfig;
+  baseConfig: GauntletConfig;
+  webhookSecret?: string;
+}
+
+async function runPrdDebate({ jobId, validInput, config, webhookSecret }: PrdDebateParams): Promise<void> {
   // Check model availability
   const validationCache = getValidationCache();
   const skippedCritics: Array<{ model: CriticModel; reason: string }> = [];
@@ -189,11 +226,7 @@ export async function handleRunGauntlet(
       error: 'PROVIDER_ERROR',
       message: 'Claude (defender) is unavailable. Cannot proceed with gauntlet.',
     });
-    return {
-      error: 'PROVIDER_ERROR',
-      message: 'Claude (defender) is unavailable. Cannot proceed with gauntlet.',
-      details: { validation: validationCache?.claude },
-    };
+    return;
   }
 
   if (!chatgptAvailable) {
@@ -202,10 +235,7 @@ export async function handleRunGauntlet(
         error: 'PROVIDER_ERROR',
         message: 'ChatGPT is unavailable and fallback policy is set to error.',
       });
-      return {
-        error: 'PROVIDER_ERROR',
-        message: 'ChatGPT is unavailable and fallback policy is set to error.',
-      };
+      return;
     }
     skippedCritics.push({
       model: 'chatgpt',
@@ -219,10 +249,7 @@ export async function handleRunGauntlet(
         error: 'PROVIDER_ERROR',
         message: 'Gemini is unavailable and fallback policy is set to error.',
       });
-      return {
-        error: 'PROVIDER_ERROR',
-        message: 'Gemini is unavailable and fallback policy is set to error.',
-      };
+      return;
     }
     skippedCritics.push({
       model: 'gemini',
@@ -230,8 +257,16 @@ export async function handleRunGauntlet(
     });
   }
 
-  // If all critics are skipped, return original PRD
+  // If all critics are skipped, store output and mark complete
   if (skippedCritics.length === 2) {
+    const summary: OutputSummary = {
+      totalRounds: 0,
+      chatgptRounds: 0,
+      geminiRounds: 0,
+      consensusReached: false,
+      totalTokens: 0,
+      estimatedCost: 0,
+    };
     const output: GauntletOutput = {
       jobId,
       finalPrd: validInput.prd,
@@ -242,9 +277,13 @@ export async function handleRunGauntlet(
         estimatedCost: 0,
         skippedCritics,
       },
+      summary,
+      status: 'complete',
+      consensusReached: false,
     };
+    // D6: Store clean output without webhookSecret
     jobStore.complete(jobId, output);
-    return output;
+    return;
   }
 
   // Initialize tracking
@@ -298,12 +337,8 @@ export async function handleRunGauntlet(
       // Store transcript
       jobStore.storeTranscript(jobId, 'chatgpt', result.transcript);
 
-      // Store summary (or full transcript if requested)
-      if (config.includeTranscripts || validInput.config?.includeTranscripts) {
-        debates.chatgpt = result.transcript.summary;
-      } else {
-        debates.chatgpt = result.transcript.summary;
-      }
+      // Store summary
+      debates.chatgpt = result.transcript.summary;
 
       // Update partial result
       jobStore.updateDebateProgress(
@@ -334,10 +369,7 @@ export async function handleRunGauntlet(
           error: 'PROVIDER_ERROR',
           message: 'ChatGPT debate encountered an error. Check server logs for details.',
         });
-        return {
-          error: 'PROVIDER_ERROR',
-          message: 'ChatGPT debate encountered an error. Check server logs for details.',
-        };
+        return;
       }
 
       skippedCritics.push({
@@ -394,10 +426,7 @@ export async function handleRunGauntlet(
           error: 'PROVIDER_ERROR',
           message: 'Gemini debate encountered an error. Check server logs for details.',
         });
-        return {
-          error: 'PROVIDER_ERROR',
-          message: 'Gemini debate encountered an error. Check server logs for details.',
-        };
+        return;
       }
 
       skippedCritics.push({
@@ -420,6 +449,26 @@ export async function handleRunGauntlet(
 
   // Build final output
   const tokenCounts = costTracker.getTokenCountByModel();
+  const totalTokens = tokenCounts.claude + tokenCounts.chatgpt + tokenCounts.gemini;
+
+  // D1: Build OutputSummary
+  const cacheStats = getTerminologyCacheStats();
+  const summary: OutputSummary = {
+    totalRounds,
+    chatgptRounds: debates.chatgpt?.rounds ?? 0,
+    geminiRounds: debates.gemini?.rounds ?? 0,
+    consensusReached: allDebatesReached,
+    totalTokens,
+    estimatedCost: costTracker.getEstimatedCostRounded(),
+    ...(cacheStats.hits > 0 || cacheStats.misses > 0
+      ? {
+          cacheHits: cacheStats.hits,
+          cacheMisses: cacheStats.misses,
+        }
+      : {}),
+  };
+
+  // D6: Build output WITHOUT webhookSecret
   const output: GauntletOutput = {
     jobId,
     finalPrd: currentPrd,
@@ -431,6 +480,7 @@ export async function handleRunGauntlet(
       ...(stoppedEarly && { stoppedEarly }),
       ...(skippedCritics.length > 0 && { skippedCritics }),
     },
+    summary,
   };
 
   // Only include debates if at least one critic ran
@@ -439,7 +489,6 @@ export async function handleRunGauntlet(
   }
 
   // v3.0: Add cache stats if terminology research was used
-  const cacheStats = getTerminologyCacheStats();
   if (cacheStats.hits > 0 || cacheStats.misses > 0) {
     output.stats.cacheStats = {
       hits: cacheStats.hits,
@@ -480,11 +529,6 @@ export async function handleRunGauntlet(
     });
   }
 
-  // v3.0: Include webhook secret if generated
-  if (webhookSecret) {
-    output.webhookSecret = webhookSecret;
-  }
-
   // v4.0: Determine final job status based on outcomes
   let finalStatus: JobStatus = 'complete';
   if (hasIncompleteOutput) {
@@ -493,7 +537,11 @@ export async function handleRunGauntlet(
     finalStatus = 'consensus_failed';
   }
 
-  // Complete job with appropriate status
+  // D4: Persist status and consensusReached on the output for disk retrieval
+  output.status = finalStatus;
+  output.consensusReached = allDebatesReached;
+
+  // D6: Store clean output (no webhookSecret) in memory
   jobStore.complete(jobId, output, finalStatus);
 
   logger.logJobCompleted(jobId, {
@@ -502,11 +550,9 @@ export async function handleRunGauntlet(
     outcome: hasIncompleteOutput ? 'incomplete_output' : stoppedEarly ? 'early_stop' : consensusFailed ? 'consensus_failed' : 'complete',
   });
 
-  // Auto-save completed job to disk (S-1: strip webhookSecret before saving)
+  // Auto-save completed job to disk (D6: webhookSecret was never placed on output object)
   try {
-    const outputForDisk = { ...output };
-    delete outputForDisk.webhookSecret;
-    await saveJobToDisk(jobId, outputForDisk);
+    await saveJobToDisk(jobId, output);
     logger.logInfo('Job auto-saved to disk', { jobId });
   } catch (error) {
     logger.logWarn('Failed to auto-save job to disk', {
@@ -515,6 +561,4 @@ export async function handleRunGauntlet(
     });
     // Don't fail the job if save fails
   }
-
-  return output;
 }

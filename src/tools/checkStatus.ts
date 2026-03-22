@@ -39,6 +39,7 @@ export function handleCheckStatus(
   // Build response based on status
   const response: StatusOutput = {
     jobId: job.jobId,
+    jobType: job.jobType,
     status: job.status,
     lastUpdate: job.lastUpdate,
   };
@@ -61,6 +62,7 @@ export function handleCheckStatus(
     // Return the final result directly - this is the key retrieval case
     return {
       jobId: job.jobId,
+      jobType: job.jobType,
       status: job.status,
       lastUpdate: job.lastUpdate,
       // Include finalPrd in partialResult for completed jobs (allows retrieval)
@@ -75,6 +77,7 @@ export function handleCheckStatus(
   if (job.status === 'error' && job.error) {
     return {
       jobId: job.jobId,
+      jobType: job.jobType,
       status: job.status,
       lastUpdate: job.lastUpdate,
     };
