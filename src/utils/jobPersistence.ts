@@ -116,12 +116,14 @@ export async function loadJobFromDisk(
       const s = outputAny.stats;
       outputAny.summary = {
         totalRounds: s.totalRounds ?? 0,
-        chatgptRounds: 0,
-        geminiRounds: 0,
+        chatgptRounds: s.chatgptRounds ?? s.totalRounds ?? 0,
+        geminiRounds: s.geminiRounds ?? s.totalRounds ?? 0,
         consensusReached: outputAny.consensusReached ?? false,
-        totalTokens: s.tokensUsed
-          ? ((s.tokensUsed.claude ?? 0) + (s.tokensUsed.chatgpt ?? 0) + (s.tokensUsed.gemini ?? 0))
-          : 0,
+        totalTokens:
+          typeof s.tokensUsed === 'number'
+            ? s.tokensUsed
+            : (s.tokensUsed?.total ??
+               ((s.tokensUsed?.claude ?? 0) + (s.tokensUsed?.chatgpt ?? 0) + (s.tokensUsed?.gemini ?? 0))),
         estimatedCost: s.estimatedCost ?? 0,
       };
     }

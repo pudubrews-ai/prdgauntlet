@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { z } from 'zod';
-import type { TranscriptOutput, TranscriptError, CriticModel } from '../types/index.js';
+import type { TranscriptOutput, TranscriptError, CriticModel, DebateSummary, DebateMessage } from '../types/index.js';
 import { jobStore } from '../utils/jobStore.js';
 import { loadJobFromDisk } from '../utils/jobPersistence.js';
 
@@ -36,20 +36,54 @@ export async function handleGetTranscript(
     try {
       const savedOutput = await loadJobFromDisk(jobId);
       if (savedOutput) {
-        const debates = (savedOutput as any).debates;
-        if (debates) {
+        const savedData = savedOutput as unknown as Record<string, unknown>;
+        const debates = savedData.debates;
+        if (debates && typeof debates === 'object') {
+          const debateRecord = debates as Record<string, unknown>;
           const modelKey = model as CriticModel;
-          const debate = debates[modelKey];
-          if (debate) {
+          const debate = debateRecord[modelKey];
+
+          if (debate !== undefined) {
+            // Validate minimum shape of debate entry
+            if (typeof debate !== 'object' || debate === null || Array.isArray(debate)) {
+              return {
+                error: 'TRANSCRIPT_UNAVAILABLE' as const,
+                message: 'Saved transcript data is corrupted or in an unrecognized format.',
+              };
+            }
+
+            const debateObj = debate as Record<string, unknown>;
+            const summaryValid =
+              debateObj.summary === undefined ||
+              debateObj.summary === null ||
+              (typeof debateObj.summary === 'object' && !Array.isArray(debateObj.summary));
+            const messagesSource = debateObj.messages ?? debateObj.exchanges;
+            const messagesValid =
+              messagesSource === undefined ||
+              messagesSource === null ||
+              Array.isArray(messagesSource);
+
+            if (!summaryValid || !messagesValid) {
+              return {
+                error: 'TRANSCRIPT_UNAVAILABLE' as const,
+                message: 'Saved transcript data is corrupted or in an unrecognized format.',
+              };
+            }
+
+            const summary: DebateSummary =
+              typeof debateObj.summary === 'object' && debateObj.summary !== null
+                ? debateObj.summary as unknown as DebateSummary
+                : {
+                    rounds: typeof debateObj.rounds === 'number' ? debateObj.rounds : 0,
+                    outcome: 'unknown' as DebateSummary['outcome'],
+                    keyChanges: Array.isArray(debateObj.keyChanges) ? debateObj.keyChanges as string[] : [],
+                  };
+            const messages: DebateMessage[] = Array.isArray(messagesSource)
+              ? messagesSource as unknown as DebateMessage[]
+              : [];
+
             return {
-              transcript: {
-                summary: debate.summary ?? {
-                  rounds: debate.rounds ?? 0,
-                  outcome: debate.outcome ?? 'unknown',
-                  keyChanges: debate.keyChanges ?? [],
-                },
-                messages: debate.messages ?? debate.exchanges ?? [],
-              },
+              transcript: { summary, messages },
             };
           }
           return {
